@@ -1,8 +1,29 @@
 # README_data - Coleta e padronização 
 
+## Breve descrição das fontes
+ONS – Carga verificada (SE/CO)
+Sinal da demanda real. (Agregamos para semanal; criamos lags e médias móveis.)
+
+ONS – Geração por fonte no SE/CO (se existir; senão, usar por usina e somar por fonte)
+Sinal da oferta efetiva (hidro/eólica/FV/térmica). Evita baixar tudo por usina do país.
+
+ONS – Intercâmbios do SE/CO
+Importações/Exportações → entram na margem de suprimento.
+
+ONS – ENA & EAR (diário, SE/CO)
+Hidrologia (entrada d’água e estoque). Excelentes “condutores” do risco.
+
+ONS – Constrained-off (cortes) eólica/FV
+Se houve corte por restrição, é um gatilho forte para classe “alto”.
+
+Clima (1 fonte leve) — NASA POWER (diário agregado p/ GO)
+GHI (radiação) e temperatura (impacto em FV e consumo). Coleta simples por API, baixo volume.
+
+
 ## Onde baixar (resumo)
 
-- **ONS** (manual): baixe CSV/XLSX das páginas de **Carga Verificada**, **Geração por Fonte**, **Intercâmbios**, **ENA (diária)**, **EAR (diária)** e **Constrained-off** (eólica/FV) do **Submercado Sudeste/Centro-Oeste**.  
+- **ONS** (manual): baixe CSV/XLSX das páginas de **Carga Verificada**, **Geração por Fonte**, **Intercâmbios**, **ENA (diária)**, **EAR (diária)** e **Constrained-off** (eólica/FV) do **Submercado Sudeste/Centro-Oeste**. 
+
   - Salve com estes nomes em `data/raw/`:  
     - `ons_carga_diaria.csv`  
     - `ons_geracao_fontes_diaria.csv`  
