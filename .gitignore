@@ -1,0 +1,79 @@
+# -----------------------------
+# Projeto: Risco de Déficit Energia (GO)
+# -----------------------------
+
+# Python / bytecode / cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# Ambientes virtuais
+.venv/
+venv/
+env/
+.env
+.python-version
+
+# Pacotes / build
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# Ferramentas / testes / cobertura
+.pytest_cache/
+.mypy_cache/
+.hypothesis/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+.cache/
+
+# IDE / OS
+*.swp
+*.swo
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Artefatos do projeto (gerados)
+models/
+reports/
+data/processed/
+data/features/
+# dados brutos grandes (mantém possibilidade de exemplos)
+data/raw/**/*.parquet
+data/raw/**/*.feather
+data/raw/**/*.xlsx
+data/raw/**/*.xls
+data/raw/**/*.csv
+
+# Permitir arquivos de marcador (para versionar pastas vazias) e exemplos
+!data/**/.gitkeep
+!data/raw/**/amostra_*.csv
+!data/raw/**/sample_*.csv
+!data/raw/**/README*.md
+
+# Arquivos temporários/arquivos de pacote
+*.tmp
+*.temp
+*.bak
+*.zip
+*.tar
+*.tar.gz
+
+# Ferramentas de nuvem / infraestrutura (se usar)
+.aws-sam/
+.serverless/
+.terraform/
+
+# Arquivos locais diversos
+*.local
+*.envrc
