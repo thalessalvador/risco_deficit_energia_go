@@ -18,7 +18,6 @@ project/
 │  └─ api/handler.py              # stub p/ AWS Lambda
 ├─ configs/config.yaml
 ├─ requirements.txt
-├─ Makefile
 ├─ README.md
 └─ data/
    └─ raw/                        # coloque aqui os CSVs brutos (ver tabela abaixo)
@@ -37,18 +36,23 @@ pip install -r requirements.txt
 
 2) Baixar dados e gerar insumos diários (ONS + NASA)
 ```bash
-make data                        # download (CKAN) + ETL (+ clima NASA)
+python main.py data --incluir-meteorologia  # download (CKAN) + ETL (+ clima NASA)
 ```
 
 3) Gerar features semanais e treinar
 ```bash
-make features                    # => data/features/features_weekly.parquet
-make train                       # => models/*.joblib e reports/cv_scores.csv
+python main.py features          # => data/features/features_weekly.parquet
+python main.py train             # => models/*.joblib e reports/cv_scores.csv
 ```
 
 4) (Opcional) Avaliar
 ```bash
-make eval
+python main.py eval --model xgb
+```
+
+Comando único:
+```bash
+python main.py all --incluir-meteorologia
 ```
 
 Detalhes sobre fontes, nomes de arquivos e parametrização em `README_data.md`.
@@ -82,20 +86,20 @@ pip install -r requirements.txt
 
 1) **Gerar features semanais**
 ```bash
-make features
+python main.py features
 # => salva data/features/features_weekly.parquet
 ```
 
 2) **Treinar modelos (LogReg e XGBoost)**
 ```bash
-make train
+python main.py train
 # => salva models/logreg.joblib e models/xgb.joblib
 # => gera reports/cv_scores.csv com F1-macro e Balanced Accuracy (TimeSeriesSplit)
 ```
 
 3) **Avaliar e gerar relatório**
 ```bash
-make eval
+python main.py eval --model xgb
 # => reports/report_xgb.txt (classification_report + matriz de confusão)
 ```
 

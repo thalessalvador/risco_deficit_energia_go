@@ -36,7 +36,7 @@ GHI (radiação), temperatura e **precipitação** (impacto em FV, carga e hidro
     - `ons_constrained_off_fv_mensal.csv` (mensal)
 
   - Em seguida, rode o ETL para gerar os arquivos diários padronizados que o pipeline usa:  
-    - `make ingest`  
+    - `python main.py data`  
     Isso produzirá em `data/raw/`:  
     - `ons_carga_diaria.csv`  
     - `ons_geracao_fontes_diaria.csv`  
@@ -46,7 +46,7 @@ GHI (radiação), temperatura e **precipitação** (impacto em FV, carga e hidro
     - `ons_cortes_eolica_diario.csv`  
     - `ons_cortes_fv_diario.csv`
 
-- **NASA POWER** (API): pode ser baixado via ETL (`python -m src.etl_ons --fetch-nasa`) ou manualmente. Resultado: `clima_go_diario.csv` com colunas `data, ghi, temp2m_c, precipitacao_mm`.
+- **NASA POWER** (API): pode ser baixado via CLI principal (`python main.py data --incluir-meteorologia`) ou manualmente. Resultado: `clima_go_diario.csv` com colunas `data, ghi, temp2m_c, precipitacao_mm`.
 
 ### Exemplo rápido (Python) para NASA POWER
 
@@ -86,23 +86,16 @@ print("Salvo em data/raw/clima_go_diario.csv", df.shape)
 ```
 
 ### Automatizando o download e o ETL
-- Baixar os arquivos brutos do ONS automaticamente:  
-  - `make download`  
-  Isso usa a API CKAN do portal (dados.ons.org.br) e salva em `data/raw/` com nomes padronizados:  
-  `ons_carga.csv`, `ons_balanco_subsistema_horario.csv`, `ons_intercambios_entre_subsistemas_horario.csv`,  
-  `ons_ena_diario_subsistema.csv`, `ons_ear_diario_subsistema.csv`, `ons_constrained_off_eolica_mensal.csv`,  
-  `ons_constrained_off_fv_mensal.csv`.
+- Tudo de uma vez (ONS + ETL + NASA):  
+  - `python main.py all --incluir-meteorologia`
 
-- Rodar o ETL para gerar os diários padronizados que o pipeline consome:  
-  - `make ingest`
+- Apenas preparar dados (ONS + ETL, sem NASA):  
+  - `python main.py data`
 
-- Um comando único com clima NASA:  
-  - `make data`  
-  Esse comando encadeia `download` + `ingest` e inclui `--fetch-nasa` para salvar `clima_go_diario.csv`.
-
-Parâmetros úteis:
-- Submercado (padrão `SE/CO`): `make data SUBMERCADO="SE/CO"`
-- Forçar sobrescrita dos arquivos gerados pelo ETL (inclui NASA): `make data OVERWRITE=1`
+- Parâmetros úteis:
+  - Submercado (padrão `SE/CO`): `python main.py data --submercado "SE/CO"`
+  - Incluir meteorologia (NASA): `python main.py data --incluir-meteorologia`
+  - Sobrescrever saídas do ETL: `python main.py data --overwrite`
 
 Notas:
 - O ETL é tolerante a variações comuns de nomes de colunas. Se algum arquivo do ONS vier com layout muito diferente, ajuste os nomes conforme os sugeridos acima ou me avise que eu amplio os mapeamentos no `src/etl_ons.py`.
