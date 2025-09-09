@@ -14,17 +14,30 @@ ONS – ENA & EAR (diário, SE/CO)
 Hidrologia (entrada d’água e estoque). Excelentes “condutores” do risco.
 
 ONS – Constrained-off (cortes) eólica/FV
-Se houve corte por restrição, é um gatilho forte para classe “alto”.
+Indicador de **superávit/limitação de escoamento** (não é déficit). Calculamos a **razão de corte renovável** semanal:  
+`ratio_corte_renovavel_w = corte_renovavel / (corte_renovavel + geracao_renovavel)`.  
+Se a razão > limiar (padrão **5%**) e **não houver importação líquida** na semana (saldo_importador ≤ 0), usamos como **sinal de redução de risco** (alto→médio; médio→baixo).
 
 Clima (1 fonte leve) — NASA POWER (diário agregado p/ GO)
-GHI (radiação) e temperatura (impacto em FV e consumo). Coleta simples por API, baixo volume.
+GHI (radiação), temperatura e **precipitação** (impacto em FV, carga e hidrologia). Coleta simples por API, baixo volume.
 
 
 ## Onde baixar (resumo)
 
-- **ONS** (manual): baixe CSV/XLSX das páginas de **Carga Verificada**, **Geração por Fonte**, **Intercâmbios**, **ENA (diária)**, **EAR (diária)** e **Constrained-off** (eólica/FV) do **Submercado Sudeste/Centro-Oeste**. 
+- **ONS** (manual): baixe CSV/XLSX das páginas de **Carga Verificada**, **Balanço de Energia nos Subsistemas** (serve como "Geração por Fonte"), **Intercâmbios Entre Subsistemas**, **ENA Diário por Subsistema**, **EAR Diário por Subsistema** e **Constrained-off** (eólica/FV) do **Submercado Sudeste/Centro-Oeste**. 
 
-  - Salve com estes nomes em `data/raw/`:  
+  - Salve os arquivos brutos (como vêm do portal) em `data/raw/` com estes nomes sugeridos:  
+    - `ons_carga.csv` (pode ser diário ou horário)  
+    - `ons_balanco_subsistema_horario.csv` (horário)  
+    - `ons_intercambios_entre_subsistemas_horario.csv` (horário)  
+    - `ons_ena_diario_subsistema.csv` (diário)  
+    - `ons_ear_diario_subsistema.csv` (diário)  
+    - `ons_constrained_off_eolica_mensal.csv` (mensal)  
+    - `ons_constrained_off_fv_mensal.csv` (mensal)
+
+  - Em seguida, rode o ETL para gerar os arquivos diários padronizados que o pipeline usa:  
+    - `make ingest`  
+    Isso produzirá em `data/raw/`:  
     - `ons_carga_diaria.csv`  
     - `ons_geracao_fontes_diaria.csv`  
     - `ons_intercambio_diario.csv`  
@@ -33,7 +46,7 @@ GHI (radiação) e temperatura (impacto em FV e consumo). Coleta simples por API
     - `ons_cortes_eolica_diario.csv`  
     - `ons_cortes_fv_diario.csv`
 
-- **NASA POWER** (API): gere **diário** para Goiás e salve como `clima_go_diario.csv` com as colunas `data, ghi, temp2m_c, precipitacao_mm`.
+- **NASA POWER** (API): pode ser baixado via ETL (`python -m src.etl_ons --fetch-nasa`) ou manualmente. Resultado: `clima_go_diario.csv` com colunas `data, ghi, temp2m_c, precipitacao_mm`.
 
 ### Exemplo rápido (Python) para NASA POWER
 
@@ -72,7 +85,30 @@ df.to_csv("data/raw/clima_go_diario.csv", index=False)
 print("Salvo em data/raw/clima_go_diario.csv", df.shape)
 ```
 
+### Automatizando o download e o ETL
+- Baixar os arquivos brutos do ONS automaticamente:  
+  - `make download`  
+  Isso usa a API CKAN do portal (dados.ons.org.br) e salva em `data/raw/` com nomes padronizados:  
+  `ons_carga.csv`, `ons_balanco_subsistema_horario.csv`, `ons_intercambios_entre_subsistemas_horario.csv`,  
+  `ons_ena_diario_subsistema.csv`, `ons_ear_diario_subsistema.csv`, `ons_constrained_off_eolica_mensal.csv`,  
+  `ons_constrained_off_fv_mensal.csv`.
+
+- Rodar o ETL para gerar os diários padronizados que o pipeline consome:  
+  - `make ingest`
+
+- Um comando único com clima NASA:  
+  - `make data`  
+  Esse comando encadeia `download` + `ingest` e inclui `--fetch-nasa` para salvar `clima_go_diario.csv`.
+
+Parâmetros úteis:
+- Submercado (padrão `SE/CO`): `make data SUBMERCADO="SE/CO"`
+- Forçar sobrescrita dos arquivos gerados pelo ETL (inclui NASA): `make data OVERWRITE=1`
+
+Notas:
+- O ETL é tolerante a variações comuns de nomes de colunas. Se algum arquivo do ONS vier com layout muito diferente, ajuste os nomes conforme os sugeridos acima ou me avise que eu amplio os mapeamentos no `src/etl_ons.py`.
+ - O downloader (`src/fetch_ons.py`) escolhe automaticamente o recurso mais adequado (CSV/XLSX/ZIP mais recente). Caso o portal mude nomes/títulos, podemos ajustar as queries no próprio script.
+
 ### Observações de consistência
 - Manter **nomes de colunas exatamente** como definidos (o código depende deles).  
 - Se algum dataset do ONS vier horário, **agregue para diário** (soma p/ energia; média p/ índices).  
-- O `feature_engineer.py` agrega **D→W**, calcula **margem de suprimento** e cria **lags/janelas**.
+- O `feature_engineer.py` agrega **D→W**, calcula **margem de suprimento**, o **saldo importador** e a **razão de corte renovável**, e cria **lags/janelas**.

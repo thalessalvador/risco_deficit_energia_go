@@ -10,19 +10,21 @@ paths:
 problem:
   horizon: "weekly"           # semanal é o padrão do projeto
   target_name: "classe_risco" # "baixo" | "medio" | "alto"
+  forecast_horizon_weeks: 1    # horizonte de previsão T+1 semana (0 = nowcast)
 
-  # Regras de rotulagem (quantis da margem + overrides)
+  # Regras de rotulagem (quantis da margem + ajustes)
   label_rules:
     coluna_margem: "margem_suprimento_min_w"
     q_baixo: 0.10            # <= → "alto"
     q_medio: 0.40            # (q_baixo, q_medio] → "medio"; > → "baixo"
 
-    # Override por cortes de renováveis
-    colunas_corte: ["corte_eolica_mwh_sum_w", "corte_fv_mwh_sum_w"]
-    corte_thr_mwh: 0         # > 0 eleva para "alto"
-    usar_override_cortes: true
+    # Ajuste por cortes (interpretação: superávit/indisponibilidade de escoamento)
+    curtail_downgrade:
+      usar_downgrade_cortes: true  # Ativa o rebaixamento do risco em 1 nível quando houver cortes renováveis relevantes.
+      corte_ratio_thr: 0.05        # Limiar da razão semanal cortes/(cortes+geração) renovável para acionar o ajuste (0.05 = 5%).
+      requer_saldo_importador_nao_positivo: true  # Se true, só aplica quando o saldo importador semanal <= 0 (sem importação líquida).
 
-    # Override hidrológico (estiagem)
+    # Ajuste hidrológico (estiagem)
     usar_override_hidro: true
     coluna_ear: "ear_pct_mean_w"
     coluna_ena: "ena_mwmed_mean_w"

@@ -1,5 +1,22 @@
 PY=python
 
+# Parâmetros configuráveis
+SUBMERCADO ?= SE/CO
+ETL_FLAGS ?=
+ifdef OVERWRITE
+ETL_FLAGS += --overwrite
+endif
+
+download:
+	$(PY) -m src.fetch_ons --all || $(PY) src/fetch_ons.py --all
+
+ingest:
+	$(PY) -m src.etl_ons --raw-dir data/raw --out-dir data/raw --submercado "$(SUBMERCADO)" $(ETL_FLAGS) || $(PY) src/etl_ons.py --raw-dir data/raw --out-dir data/raw --submercado "$(SUBMERCADO)" $(ETL_FLAGS)
+
+data:
+	$(MAKE) download
+	$(PY) -m src.etl_ons --raw-dir data/raw --out-dir data/raw --submercado "$(SUBMERCADO)" --fetch-nasa $(ETL_FLAGS) || $(PY) src/etl_ons.py --raw-dir data/raw --out-dir data/raw --submercado "$(SUBMERCADO)" --fetch-nasa $(ETL_FLAGS)
+
 features:
 	$(PY) - <<'PY'
 from yaml import safe_load

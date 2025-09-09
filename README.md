@@ -13,6 +13,8 @@ project/
 │  ├─ feature_engineer.py
 │  ├─ train.py
 │  ├─ evaluate.py
+│  ├─ etl_ons.py                # ETL: brutos do ONS/NASA → diários padronizados
+│  ├─ fetch_ons.py              # Downloader via CKAN (dados.ons.org.br)
 │  └─ api/handler.py              # stub p/ AWS Lambda
 ├─ configs/config.yaml
 ├─ requirements.txt
@@ -23,6 +25,33 @@ project/
 ```
 
 > Timezone padrão: **America/Sao_Paulo**.
+
+## Início Rápido
+
+1) Ambiente e dependências
+```bash
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\\Scripts\\activate
+pip install -r requirements.txt
+```
+
+2) Baixar dados e gerar insumos diários (ONS + NASA)
+```bash
+make data                        # download (CKAN) + ETL (+ clima NASA)
+```
+
+3) Gerar features semanais e treinar
+```bash
+make features                    # => data/features/features_weekly.parquet
+make train                       # => models/*.joblib e reports/cv_scores.csv
+```
+
+4) (Opcional) Avaliar
+```bash
+make eval
+```
+
+Detalhes sobre fontes, nomes de arquivos e parametrização em `README_data.md`.
 
 ## Dados utilizados
 
@@ -76,8 +105,8 @@ make eval
 - `problem.label_rules`:
   - `coluna_margem`: **margem_suprimento_min_w** (proxy da margem semanal).
   - `q_baixo`/`q_medio`: definem os **quantis** para rotular **alto/médio/baixo**.
-  - `usar_override_cortes`: se houve **corte eólico/FV** na semana → força **alto**.
-  - `usar_override_hidro`: **EAR** muito baixa **ou** **ENA** muito baixa por `k` semanas → força **alto**.
+  - **Ajustes por cortes**: cortes eólico/FV **diminuem** o risco quando indicam **superávit renovável** (razão de corte semanal acima do limiar **e** sem importação líquida).
+  - **Ajustes por hidrologia**: **EAR** muito baixa **ou** **ENA** muito baixa por `k` semanas → **alto**.
 - `aggregation.features`: agregações de **diário→semanal**, **lags** e **janelas móveis**.
 - `modeling.models`: especifica **Logistic Regression** e **XGBoost**.
 
@@ -89,8 +118,8 @@ make eval
    `geração_total (hidro+eólica+FV+term) + importações − exportações`.  
 2. Aplicamos **quantis** sobre o **mínimo**/proxy semanal para definir:  
    - **alto** (≤ Q10), **médio** (Q10–Q40], **baixo** (> Q40).  
-3. **Overrides**:  
-   - **Cortes** (constrained-off) eólico/FV > 0 na semana → **alto**.  
+3. **Ajustes**:  
+   - **Cortes** (constrained-off) eólico/FV: **reduzem** o risco quando representam superávit renovável (razão de corte > limiar e sem importação líquida).  
    - **Hidrologia**: **EAR** muito baixa **ou** **ENA** muito baixa por `k` semanas → **alto**.
 
 ## Saídas

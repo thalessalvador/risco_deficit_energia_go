@@ -13,11 +13,18 @@ from train import rotular_semana
 def main(config_path="configs/config.yaml", model_name="xgb"):
     cfg = yaml.safe_load(open(config_path, "r", encoding="utf-8"))
     data = load_all_sources(cfg)
-    Xw = build_features_weekly(data, cfg).ffill().bfill()
-    y = rotular_semana(Xw, cfg)
+    Xw = build_features_weekly(data, cfg)
+    Xw = Xw.dropna(axis=1, how="all")
+    H = int(cfg.get("problem", {}).get("forecast_horizon_weeks", 1))
+    y = rotular_semana(Xw, cfg, ref_df=Xw)
+    if H > 0:
+        y = y.shift(-H)
+    idx_ok = y.dropna().index
+    X = Xw.loc[idx_ok]
+    y = y.loc[idx_ok]
 
     model = load(Path(cfg["paths"]["models_dir"]) / f"{model_name}.joblib")
-    pred = model.predict(Xw)
+    pred = model.predict(X)
 
     rep = classification_report(y, pred, target_names=["baixo","medio","alto"], labels=["baixo","medio","alto"], digits=3)
     cm  = confusion_matrix(y, pred, labels=["baixo","medio","alto"])
