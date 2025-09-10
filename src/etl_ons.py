@@ -121,26 +121,30 @@ def _infer_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _read_csv_auto(path: Path) -> pd.DataFrame:
-    """Lê CSV detectando separador e com fallback de encoding.
+    """Lê CSV detectando separador e com fallback de encoding/engine.
 
-    Tenta UTF-8 e, em caso de erro, usa Latin-1/CP1252 (arquivos ONS podem vir
-    nesses encodings). Mantém o sniff de separador ("," ou ";").
-
-    Args:
-      path (Path): Caminho do arquivo.
-
-    Returns:
-      pandas.DataFrame: DataFrame com as colunas brutas.
+    Estratégia:
+    - Encodings tentados: utf-8-sig, utf-8, latin1, cp1252
+    - Separadores tentados: sniff, ';', ',', '\t', '|'
+    - Usa engine 'python' (on_bad_lines='skip') e, por fim, engine 'c' para ';' e ','
     """
-    encodings = ["utf-8", "latin1", "cp1252"]
+    encodings = ["utf-8-sig", "utf-8", "latin1", "cp1252"]
+    seps = [None, ";", ",", "\t", "|"]
     last_err = None
     for enc in encodings:
-        try:
-            return pd.read_csv(path, sep=None, engine="python", encoding=enc)
-        except UnicodeDecodeError as e:
-            last_err = e
-            continue
-    # Se todas falharem, relança a última
+        for sep in seps:
+            try:
+                return pd.read_csv(path, sep=sep, engine="python", encoding=enc, on_bad_lines="skip")
+            except Exception as e:
+                last_err = e
+                continue
+    for enc in encodings:
+        for sep in [";", ","]:
+            try:
+                return pd.read_csv(path, sep=sep, engine="c", encoding=enc)
+            except Exception as e:
+                last_err = e
+                continue
     raise last_err if last_err else RuntimeError(f"Falha ao ler CSV: {path}")
 
 
@@ -522,6 +526,8 @@ def etl_constrained_off_mensal(
 
     if vcol is not None:
         dfd = df[["data", vcol]].copy()
+        # garante numérico; valores não numéricos viram NaN → tratados como 0 na explosão
+        dfd[vcol] = pd.to_numeric(dfd[vcol], errors="coerce")
         daily = _explode_month_to_daily(dfd, vcol, date_col="data")
         daily = daily.rename(columns={vcol: f"corte_{fonte}_mwh"})
     else:
@@ -567,7 +573,7 @@ def etl_carga(input_path: Path, out_dir: Path, submercado: str) -> Optional[Path
     df = _normalize_columns(df)
 
     # filtra submercado se existir
-    sub_cols = [c for c in df.columns if c in {"submercado", "subsistema"}]
+    sub_cols = [c for c in df.columns if c in {"submercado", "subsistema", "id_subsistema", "nom_subsistema"}]
     if sub_cols:
         sub_col = sub_cols[0]
         df = df.loc[df[sub_col].apply(lambda x: _match_submercado(str(x), submercado))]
@@ -579,11 +585,11 @@ def etl_carga(input_path: Path, out_dir: Path, submercado: str) -> Optional[Path
     val_col = None
     for c in df.columns:
         nc = _norm_text(c)
-        if any(k in nc for k in ["carga", "demanda"]) and any(
-            k in nc for k in ["mw", "mwh", "mwmed", "valor"]
-        ):
-            val_col = c
-            break
+        if ("cargaverificada" in nc or "carga" in nc or "demanda" in nc) and ("mwmed" in nc or "mw" in nc or "valor" in nc):
+            # aceita apenas numéricas
+            if pd.api.types.is_numeric_dtype(df[c]):
+                val_col = c
+                break
     if val_col is None:
         # fallback comum: 'carga_mwh' ou 'valor'
         val_col = (
@@ -597,11 +603,13 @@ def etl_carga(input_path: Path, out_dir: Path, submercado: str) -> Optional[Path
 
     # tenta inferir se é horário ou diário
     is_hourly = False
-    has_hora = any(c in df.columns for c in ["hora", "hr", "h"]) or any(
-        "hora" in c for c in df.columns
-    )
-    if has_hora:
+    if "din_instante" in df.columns:
+        df = df.rename(columns={"din_instante": "data"})
         is_hourly = True
+    else:
+        has_hora = any(c in df.columns for c in ["hora", "hr", "h"]) or any("hora" in c for c in df.columns)
+        if has_hora:
+            is_hourly = True
 
     if is_hourly:
         df = _infer_datetime_index(df)

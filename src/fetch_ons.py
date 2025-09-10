@@ -15,6 +15,17 @@ import pandas as pd
 CKAN_BASE = "https://dados.ons.org.br/api/3/action"
 SITE_BASE = CKAN_BASE.split("/api/3", 1)[0]
 
+# Slugs preferidos no CKAN por dataset (evita selecionar pacotes de detalhamento)
+PREFERRED_SLUG_BY_QUERY: Dict[str, str] = {
+    "Balanço de Energia nos Subsistemas": "balanco_energia_subsistema_ho",
+    "Intercâmbios Entre Subsistemas": "intercambio_nacional_ho",
+    "ENA Diário por Subsistema": "ena_subsistema_di",
+    "EAR Diário por Subsistema": "ear_subsistema_di",
+    "Restrição de Operação por Constrained-off de Usinas Eólicas": "restricao_coff_eolica_tm",
+    "Restrição de Operação por Constrained-off de Usinas Fotovoltaicas": "restricao_coff_fotovoltaica_tm",
+    "Carga Verificada": "carga_verificada_tm",
+}
+
 
 def _norm(s: str) -> str:
     """Normaliza texto (minúsculas, sem acentos, sem pontuação extra).
@@ -155,6 +166,100 @@ DEFAULT_SPECS: Dict[str, DatasetSpec] = {
 }
 
 
+def _parse_since_to_date(since: Optional[str]) -> Optional[str]:
+    if not since:
+        return None
+    try:
+        parts = since.split("-")
+        if len(parts) == 1 and len(parts[0]) == 4:
+            return f"{int(parts[0]):04d}-01-01"
+        elif len(parts) >= 2:
+            return f"{int(parts[0]):04d}-{int(parts[1]):02d}-01"
+    except Exception:
+        return None
+    return None
+
+
+def fetch_carga_api(out_dir: Path, since: Optional[str] = None, until: Optional[str] = None, area: str = "SECO", overwrite: bool = False, verbose: bool = True) -> Optional[Path]:
+    """Baixa Carga Verificada via API oficial (apicarga.ons.org.br) e consolida em ons_carga.csv.
+
+    A API limita a janelas de ~3 meses; esta função itera em janelas e concatena o resultado.
+    """
+    import requests
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    final = out_dir / "ons_carga.csv"
+
+    # Skip se existir e não for overwrite
+    if final.exists() and not overwrite:
+        try:
+            size = final.stat().st_size
+        except Exception:
+            size = 0
+        if size > 1024:
+            if verbose:
+                print(f"[CKAN] Já existe {final.name}; pulando (use --overwrite para baixar novamente)")
+            return final
+        else:
+            if verbose:
+                print(f"[CKAN] Aviso: {final.name} parece vazio/corrompido ({size} bytes). Recriando...")
+
+    start_str = _parse_since_to_date(since) or (datetime.utcnow().strftime("%Y-%m-01"))
+    start = pd.to_datetime(start_str)
+    end = pd.to_datetime(until) if until else pd.to_datetime(datetime.utcnow().strftime("%Y-%m-%d"))
+    if end < start:
+        end = start
+
+    base_url = "https://apicarga.ons.org.br/prd/cargaverificada"
+    # janela de 89 dias (~3 meses)
+    step = pd.Timedelta(days=89)
+
+    dfs = []
+    cur = start
+    while cur <= end:
+        j_ini = cur.strftime("%Y-%m-%d")
+        j_fim = min(cur + step, end).strftime("%Y-%m-%d")
+        params = {"dat_inicio": j_ini, "dat_fim": j_fim, "cod_areacarga": area}
+        if verbose:
+            print(f"[ONS API] Carga {j_ini} → {j_fim} ({area})")
+        try:
+            r = requests.get(base_url, params=params, timeout=(15, 60))
+            r.raise_for_status()
+            j = r.json()
+            # extrai lista do JSON (tenta campo 'data' senão assume lista na raiz)
+            if isinstance(j, dict):
+                # pega primeiro valor que seja lista
+                arr = None
+                for v in j.values():
+                    if isinstance(v, list):
+                        arr = v
+                        break
+                if arr is None:
+                    arr = []
+            elif isinstance(j, list):
+                arr = j
+            else:
+                arr = []
+            if not arr:
+                cur += (step + pd.Timedelta(days=1))
+                continue
+            df = pd.DataFrame(arr)
+            dfs.append(df)
+        except Exception as e:
+            if verbose:
+                print(f"[ONS API] Falha {j_ini}→{j_fim}: {e}")
+        cur += (step + pd.Timedelta(days=1))
+
+    if not dfs:
+        if verbose:
+            print("[ONS API] Nenhum dado retornado para Carga.")
+        return None
+
+    raw = pd.concat(dfs, ignore_index=True)
+    # salva como CSV bruto consolidado
+    raw.to_csv(final, index=False)
+    return final
+
 def _download_resource(url: str, out_path: Path) -> Path:
     """Baixa um recurso (CSV/XLSX/ZIP) de forma robusta e retorna o caminho local.
 
@@ -236,6 +341,19 @@ def _maybe_convert_to_csv(in_path: Path, out_csv: Path) -> Path:
             except Exception:
                 # deixa como está; o chamador pode lidar
                 return in_path
+
+
+def _normalize_csv(in_csv: Path, out_csv: Path) -> Path:
+    """Normaliza um CSV detectando separador e regravando com vírgula e header.
+
+    Retorna o caminho de saída ou o arquivo original em caso de falha.
+    """
+    try:
+        df = pd.read_csv(in_csv, sep=None, engine="python")
+        df.to_csv(out_csv, index=False)
+        return out_csv
+    except Exception:
+        return in_csv
 
 
 def _append_csv_files(sources: List[Path], target: Path) -> Path:
@@ -338,15 +456,31 @@ def _list_resources(client: CkanClient, query: str, resource_filter: Optional[st
 
     # escolhe melhor pacote por similaridade com o título normalizado
     qn = _norm(query)
+    pref_slug = PREFERRED_SLUG_BY_QUERY.get(query, "").lower()
     def score(pkg):
         title = _norm(pkg.get("title", ""))
         s = 0
         if qn in title or title in qn:
             s += 10
         mm = pkg.get("metadata_modified") or ""
+        # preferir pacote com slug esperado
+        name = (pkg.get("name") or "").lower()
+        if pref_slug and pref_slug in name:
+            s += 500
+        # penalizar detalhamento
+        if ("detalh" in title) or ("detail" in title) or ("detail" in name):
+            s -= 200
         return (s, mm)
 
-    pkg = sorted(pkgs, key=score, reverse=True)[0]
+    # tenta selecionar diretamente pelo slug preferido
+    pkg = None
+    if pref_slug:
+        for p in pkgs:
+            if pref_slug in (p.get("name") or "").lower():
+                pkg = p
+                break
+    if pkg is None:
+        pkg = sorted(pkgs, key=score, reverse=True)[0]
     pkg_full = client.show_package(pkg["id"]) if "id" in pkg else pkg
     resources = pkg_full.get("resources", [])
     # filtro opcional por regex em nome/descrição do recurso
@@ -506,6 +640,21 @@ def fetch_many_and_concat(
     Útil para datasets mensais (um recurso por mês). `since`/`until` aceitam
     prefixos no nome do recurso (ex.: "2022-" ou "2022-04").
     """
+    # Early skip: se consolidado existe e não é overwrite, não baixa de novo
+    final = out_dir / spec.out_name
+    if final.exists() and not overwrite:
+        try:
+            size = final.stat().st_size
+        except Exception:
+            size = 0
+        if size > 1024:
+            if verbose:
+                print(f"[CKAN] Já existe {final.name}; pulando concatenação (use --overwrite)")
+            return final
+        else:
+            if verbose:
+                print(f"[CKAN] Aviso: {final.name} parece vazio/corrompido ({size} bytes). Recriando...")
+
     pkg_full, resources = _list_resources(client, spec.query, spec.resource_filter, verbose)
     if not resources:
         return None
@@ -520,46 +669,69 @@ def fetch_many_and_concat(
     # agrupa por período e prefere CSV > XLSX > ZIP
     resources = _group_prefer_by_period(resources)
 
-    tmp_csvs: List[Path] = []
-    for r in resources:
-        url = r.get("url") or r.get("download_url")
-        if not url:
-            continue
-        if verbose:
-            print(f"[CKAN] Recurso mensal: {r.get('name','(sem nome)')} → {url}")
-        tmp_path = out_dir / f"{spec.out_name}.{abs(hash(url))}.tmp"
-        downloaded = _download_resource(url, tmp_path)
-        # converte para CSV se necessário
-        csv_path = downloaded if downloaded.suffix.lower() == ".csv" else downloaded.with_suffix(".csv")
-        csv_path = _maybe_convert_to_csv(downloaded, csv_path)
-        tmp_csvs.append(csv_path)
-        # limpeza de temporários (arquivo baixado e .tmp)
-        try:
-            if downloaded.exists() and downloaded != csv_path:
-                downloaded.unlink()
-        except Exception:
-            pass
-        try:
-            if tmp_path.exists() and tmp_path != downloaded:
-                tmp_path.unlink()
-        except Exception:
-            pass
+    # Concatenação em diretório temporário com arquivo .building
+    tmp_dir = out_dir / "_tmp_fetch"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    building = tmp_dir / f"{spec.out_name}.building"
+    try:
+        if building.exists():
+            building.unlink()
+    except Exception:
+        pass
 
-    if not tmp_csvs:
-        return None
-    final = out_dir / spec.out_name
-    if final.exists() and not overwrite:
-        if verbose:
-            print(f"[CKAN] Já existe {final.name}; pulando concatenação (use --overwrite)")
-        return final
-    _append_csv_files(tmp_csvs, final)
-    # limpeza de temporários
-    for p in tmp_csvs:
-        try:
-            if p.exists():
+    wrote_any = False
+    with open(building, "wb") as fout:
+        for r in resources:
+            url = r.get("url") or r.get("download_url")
+            if not url:
+                continue
+            if verbose:
+                print(f"[CKAN] Recurso mensal: {r.get('name','(sem nome)')} → {url}")
+            dl_tmp = tmp_dir / f"{abs(hash(url))}.bin"
+            downloaded = _download_resource(url, dl_tmp)
+            norm_csv = tmp_dir / f"{abs(hash(url))}.csv"
+            if downloaded.suffix.lower() == ".csv":
+                csv_path = _normalize_csv(downloaded, norm_csv)
+            else:
+                csv_path = _maybe_convert_to_csv(downloaded, norm_csv)
+
+            try:
+                with open(csv_path, "rb") as fin:
+                    if not wrote_any:
+                        fout.write(fin.read())
+                        wrote_any = True
+                    else:
+                        _ = fin.readline()
+                        fout.write(fin.read())
+            finally:
+                # limpeza de temporários da iteração
+                for pth in (downloaded, dl_tmp, csv_path):
+                    try:
+                        if pth.exists() and pth.is_file():
+                            pth.unlink()
+                    except Exception:
+                        pass
+
+    # move consolidado para o caminho final
+    try:
+        if final.exists():
+            final.unlink()
+    except Exception:
+        pass
+    building.rename(final)
+
+    # remove sobras antigas de hash, se existirem
+    try:
+        for p in out_dir.glob(f"{spec.out_name}.*.csv"):
+            if p.is_file():
                 p.unlink()
-        except Exception:
-            pass
+    except Exception:
+        pass
+    # tenta remover diretório temporário se vazio
+    try:
+        tmp_dir.rmdir()
+    except Exception:
+        pass
     return final
 
 
@@ -583,8 +755,10 @@ def fetch_all(out_dir: Path, datasets: Optional[List[str]] = None, verbose: bool
         try:
             # Para conjuntos mensais (constrained-off), baixamos e concatenamos todos recursos
             # Para a maioria dos datasets, há um recurso por mês/ano; concatena todos dentro do período
-            if key in {"corte_eolica", "corte_fv", "balanco", "intercambio", "ena", "ear", "carga"}:
+            if key in {"corte_eolica", "corte_fv", "balanco", "intercambio", "ena", "ear"}:
                 p = fetch_many_and_concat(client, spec, out_dir, since=since, until=until, verbose=verbose, overwrite=overwrite)
+            elif key == "carga":
+                p = fetch_carga_api(out_dir, since=since, until=until, overwrite=overwrite, verbose=verbose)
             else:
                 p = fetch_one(client, spec, out_dir, verbose=verbose, since=since, until=until, overwrite=overwrite)
         except Exception as e:

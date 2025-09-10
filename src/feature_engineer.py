@@ -76,14 +76,19 @@ def add_lags_rolls(
     Returns:
       pandas.DataFrame: DataFrame com colunas adicionais de lags e janelas móveis.
     """
-    out = dfw.copy()
+    # Evita fragmentação do DataFrame: acumula novas colunas e concatena ao final
+    new_cols = {}
     for col in dfw.columns:
+        s = dfw[col]
         for L in lags:
-            out[f"{col}_lag{L}w"] = dfw[col].shift(L)
+            new_cols[f"{col}_lag{L}w"] = s.shift(L)
         for R in rolls:
-            out[f"{col}_r{R}w_mean"] = dfw[col].rolling(R, min_periods=1).mean()
-            out[f"{col}_r{R}w_std"] = dfw[col].rolling(R, min_periods=1).std()
-    return out
+            roll = s.rolling(R, min_periods=1)
+            new_cols[f"{col}_r{R}w_mean"] = roll.mean()
+            new_cols[f"{col}_r{R}w_std"] = roll.std()
+    if new_cols:
+        return pd.concat([dfw, pd.DataFrame(new_cols, index=dfw.index)], axis=1, copy=False)
+    return dfw.copy()
 
 
 def build_features_weekly(data: Dict[str, pd.DataFrame], cfg: Dict) -> pd.DataFrame:

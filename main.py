@@ -15,6 +15,23 @@ from src import train as train_mod
 from src import evaluate as eval_mod
 
 
+def _since_to_date(since: Optional[str]) -> Optional[str]:
+    """Converte since (YYYY ou YYYY-MM) para data inicial YYYY-MM-01."""
+    if not since:
+        return None
+    try:
+        parts = since.split("-")
+        if len(parts) == 1 and len(parts[0]) == 4:
+            y = int(parts[0])
+            return f"{y:04d}-01-01"
+        elif len(parts) >= 2:
+            y = int(parts[0]); m = int(parts[1])
+            return f"{y:04d}-{m:02d}-01"
+    except Exception:
+        return None
+    return None
+
+
 def run_data(raw_dir: str, submercado: str, fetch_nasa: bool = False, overwrite: bool = False, since: Optional[str] = None, config_path: Optional[str] = None) -> None:
     """Executa download (CKAN), ETL do ONS e, opcionalmente, meteorologia.
 
@@ -64,7 +81,8 @@ def run_data(raw_dir: str, submercado: str, fetch_nasa: bool = False, overwrite:
 
     if fetch_nasa:
         try:
-            out = fetch_meteorologia(raw, provider="nasa_power", overwrite=overwrite)
+            inicio = _since_to_date(since)
+            out = fetch_meteorologia(raw, provider="nasa_power", overwrite=overwrite, inicio=inicio)
             print(f"[data] Meteorologia: {out if out else 'não baixado'}")
         except Exception as e:
             print(f"[data] Meteorologia falhou: {e}")
