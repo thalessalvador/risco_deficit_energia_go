@@ -7,6 +7,9 @@ paths:
   models_dir: "models"
   reports_dir: "reports"
 
+download:
+  since: "2022"             # Baixar dados a partir deste ano (ex.: "2022" ou "2022-01")
+
 problem:
   horizon: "weekly"           # semanal é o padrão do projeto
   target_name: "classe_risco" # "baixo" | "medio" | "alto"

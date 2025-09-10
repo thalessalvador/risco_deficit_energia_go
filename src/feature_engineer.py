@@ -6,10 +6,26 @@ from typing import Dict, List
 
 
 def _p05(x):
+    """Percentil 5 ignorando NaNs.
+
+    Args:
+      x (array-like): Série numérica.
+
+    Returns:
+      float: Valor do percentil 5.
+    """
     return np.nanpercentile(x, 5)
 
 
 def _p95(x):
+    """Percentil 95 ignorando NaNs.
+
+    Args:
+      x (array-like): Série numérica.
+
+    Returns:
+      float: Valor do percentil 95.
+    """
     return np.nanpercentile(x, 95)
 
 
@@ -28,6 +44,15 @@ AGG_NAME[_p05] = "p05"
 
 
 def weekly_aggregate(df: pd.DataFrame, hows: List[str]) -> pd.DataFrame:
+    """Agrega um DataFrame diário para semanal aplicando funções especificadas.
+
+    Args:
+      df (pandas.DataFrame): Dados diários com índice datetime.
+      hows (list[str]): Lista de agregações (ex.: "mean", "sum", "p95").
+
+    Returns:
+      pandas.DataFrame: Colunas agregadas com sufixo `_w` e nome da função.
+    """
     funcs = [AGG_FUNCS[h] for h in hows]
     w = df.resample("W").agg(funcs)
     cols = []
@@ -41,6 +66,16 @@ def weekly_aggregate(df: pd.DataFrame, hows: List[str]) -> pd.DataFrame:
 def add_lags_rolls(
     dfw: pd.DataFrame, lags: List[int], rolls: List[int]
 ) -> pd.DataFrame:
+    """Cria lags (em semanas) e janelas móveis para cada coluna semanal.
+
+    Args:
+      dfw (pandas.DataFrame): Features semanais agregadas.
+      lags (list[int]): Lags em semanas a criar (ex.: [1,2,4]).
+      rolls (list[int]): Tamanhos de janelas para médias/desvios móveis.
+
+    Returns:
+      pandas.DataFrame: DataFrame com colunas adicionais de lags e janelas móveis.
+    """
     out = dfw.copy()
     for col in dfw.columns:
         for L in lags:
@@ -52,6 +87,19 @@ def add_lags_rolls(
 
 
 def build_features_weekly(data: Dict[str, pd.DataFrame], cfg: Dict) -> pd.DataFrame:
+    """Constrói a feature store semanal a partir dos insumos diários.
+
+    - Agrega D→W (múltiplas funções),
+    - Deriva métricas (margem, saldo, razão de corte),
+    - Cria lags e janelas.
+
+    Args:
+      data (dict[str, pandas.DataFrame]): Dicionário com DataFrames diários.
+      cfg (dict): Configurações (agregações, lags, janelas).
+
+    Returns:
+      pandas.DataFrame: Features semanais indexadas por semana.
+    """
     hows = cfg["aggregation"]["features"]["daily_aggs"]
     lags = cfg["aggregation"]["features"]["lags_weeks"]
     rolls = cfg["aggregation"]["features"]["rolling_weeks"]

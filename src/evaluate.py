@@ -6,11 +6,20 @@ import pandas as pd
 from joblib import load
 from sklearn.metrics import classification_report, confusion_matrix
 
-from data_loader import load_all_sources
-from feature_engineer import build_features_weekly
-from train import rotular_semana
+from src.data_loader import load_all_sources
+from src.feature_engineer import build_features_weekly
+from src.train import rotular_semana
 
 def main(config_path="configs/config.yaml", model_name="xgb"):
+    """Carrega modelo, gera rótulos alinhados e produz relatório de avaliação.
+
+    Args:
+      config_path (str): Caminho para `configs/config.yaml`.
+      model_name (str): Nome do modelo salvo em `models/` (ex.: "xgb").
+
+    Returns:
+      None
+    """
     cfg = yaml.safe_load(open(config_path, "r", encoding="utf-8"))
     data = load_all_sources(cfg)
     Xw = build_features_weekly(data, cfg)

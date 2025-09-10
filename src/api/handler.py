@@ -8,6 +8,11 @@ MODEL_CANDIDATES = [Path("/opt/models/xgb.joblib"), Path("models/xgb.joblib")]
 _model = None
 
 def _load_model():
+    """Carrega o modelo treinado de caminhos conhecidos e faz cache em memória.
+
+    Returns:
+      Any: Objeto de modelo carregado via joblib.
+    """
     global _model
     if _model is None:
         for p in MODEL_CANDIDATES:

@@ -13,7 +13,8 @@ project/
 │  ├─ feature_engineer.py
 │  ├─ train.py
 │  ├─ evaluate.py
-│  ├─ etl_ons.py                # ETL: brutos do ONS/NASA → diários padronizados
+│  ├─ etl_ons.py                # ETL: brutos do ONS → diários padronizados
+│  ├─ meteo.py                  # Meteorologia (NASA POWER) – fetch/process
 │  ├─ fetch_ons.py              # Downloader via CKAN (dados.ons.org.br)
 │  └─ api/handler.py              # stub p/ AWS Lambda
 ├─ configs/config.yaml
@@ -37,6 +38,8 @@ pip install -r requirements.txt
 2) Baixar dados e gerar insumos diários (ONS + NASA)
 ```bash
 python main.py data --incluir-meteorologia  # download (CKAN) + ETL (+ clima NASA)
+# Limitar período: usa default em configs/config.yaml (download.since), ou:
+# python main.py data --since 2022
 ```
 
 3) Gerar features semanais e treinar

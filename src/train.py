@@ -12,11 +12,25 @@ from sklearn.metrics import f1_score, balanced_accuracy_score
 from sklearn.linear_model import LogisticRegression
 from joblib import dump
 
-from data_loader import load_all_sources
-from feature_engineer import build_features_weekly
+from src.data_loader import load_all_sources
+from src.feature_engineer import build_features_weekly
 
 
 def rotular_semana(df: pd.DataFrame, cfg, ref_df: pd.DataFrame | None = None) -> pd.Series:
+    """Gera rótulos semanais (baixo|medio|alto) com base na margem e ajustes.
+
+    - Usa quantis de `coluna_margem` definidos em `cfg`.
+    - Pode calcular thresholds a partir de `ref_df` (ex.: conjunto de treino) para evitar vazamento.
+    - Aplica ajustes por cortes (downgrade) e hidrologia (override por EAR/ENA).
+
+    Args:
+      df (pandas.DataFrame): Features semanais da janela alvo.
+      cfg (dict): Configurações (label_rules etc.).
+      ref_df (pandas.DataFrame|None): DataFrame de referência para cálculos de quantis.
+
+    Returns:
+      pandas.Series: Série categórica com rótulos por semana.
+    """
     r = cfg["problem"]["label_rules"]
     margem_col = r["coluna_margem"]
     q_baixo, q_med = r["q_baixo"], r["q_medio"]
@@ -68,6 +82,16 @@ def rotular_semana(df: pd.DataFrame, cfg, ref_df: pd.DataFrame | None = None) ->
 
 
 def make_model(model_cfg):
+    """Cria o estimador conforme o bloco `model_cfg` (logreg ou xgboost).
+
+    Inclui imputação no pipeline para evitar vazamento na fase de treino.
+
+    Args:
+      model_cfg (dict): Especificação com chaves `type` e `params`.
+
+    Returns:
+      sklearn.pipeline.Pipeline | xgboost.XGBClassifier: Estimador configurado.
+    """
     if model_cfg["type"] == "logistic_regression":
         return Pipeline(
             [
@@ -88,6 +112,14 @@ def make_model(model_cfg):
 
 
 def main(config_path="configs/config.yaml"):
+    """Treina os modelos definidos em `configs/config.yaml` com CV temporal.
+
+    - Constrói features semanais, gera rótulos por fold (sem vazamento) e avalia com TSS.
+    - Reajusta em todo o conjunto e salva artefatos `.joblib` e métricas de CV.
+
+    Args:
+      config_path (str): Caminho para o arquivo de configuração YAML.
+    """
     cfg = yaml.safe_load(open(config_path, "r", encoding="utf-8"))
     out_dir = Path(cfg["paths"]["models_dir"])
     out_dir.mkdir(parents=True, exist_ok=True)

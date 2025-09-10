@@ -10,7 +10,14 @@ import pandas as pd
 
 
 def _norm_text(s: str) -> str:
-    """Lower, strip, remove accents and collapse spaces/underscores."""
+    """Normaliza texto: minúsculas, sem acentos e espaçamentos compactados.
+
+    Args:
+      s (str): Texto de entrada.
+
+    Returns:
+      str: Texto normalizado para comparações/mapeamentos.
+    """
     s = s.strip().lower()
     s = unicodedata.normalize("NFKD", s)
     s = "".join(c for c in s if not unicodedata.combining(c))
@@ -22,6 +29,14 @@ def _norm_text(s: str) -> str:
 
 
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Normaliza nomes de colunas para facilitar detecção (minúsculos/sem acentos).
+
+    Args:
+      df (pandas.DataFrame): DataFrame original.
+
+    Returns:
+      pandas.DataFrame: Cópia com colunas normalizadas.
+    """
     df = df.copy()
     df.columns = [_norm_text(c) for c in df.columns]
     return df
@@ -30,15 +45,26 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 SUBMERCADO_ALIASES = {
     "seco",
     "se_co",
+    "se",
     "sudeste_centrooeste",
     "sudeste_centro_oeste",
     "sudeste_centro_oeste_seco",
     "sudeste_centrooeste_seco",
+    "sudeste",
     "se/co",
 }
 
 
 def _match_submercado(value: str, alvo: str = "seco") -> bool:
+    """Verifica se um valor textual corresponde ao submercado alvo (com aliases).
+
+    Args:
+      value (str): Texto a testar (ex.: "SE", "SUDESTE/CENTRO-OESTE").
+      alvo (str): Alvo normalizado (ex.: "SE/CO").
+
+    Returns:
+      bool: True se houver correspondência.
+    """
     v = _norm_text(str(value))
     a = _norm_text(alvo)
     if v == a:
@@ -49,24 +75,38 @@ def _match_submercado(value: str, alvo: str = "seco") -> bool:
 
 
 def _infer_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
-    """Try to create a DatetimeIndex from common date/hour columns.
+    """Infere um índice datetime a partir de colunas comuns de data/hora.
 
-    - If 'data' exists and is datetime-like, use it.
-    - If 'data' and 'hora' exist, combine.
-    - If 'datetime' exists, use it.
-    - Otherwise, raise.
+    Tenta `din_instante`, `data_hora`, `datahora`, `datetime`, `data` ou a
+    combinação `data`+`hora`.
+
+    Args:
+      df (pandas.DataFrame): DataFrame com colunas de data/hora.
+
+    Returns:
+      pandas.DataFrame: Mesmo DataFrame, reindexado por datetime.
     """
     df = df.copy()
     cols = set(df.columns)
-    if "data" in cols and np.issubdtype(df["data"].dtype, np.datetime64):
-        dt = pd.to_datetime(df["data"], errors="coerce")
-    elif {"data", "hora"} <= cols:
+    # candidatos comuns no ONS
+    candidates = [
+        "din_instante",
+        "datahora",
+        "data_hora",
+        "data_e_hora",
+        "datetime",
+        "data",
+    ]
+    dt = None
+    for c in candidates:
+        if c in cols:
+            dt = pd.to_datetime(df[c], errors="coerce")
+            break
+    if dt is None and {"data", "hora"} <= cols:
         dt = pd.to_datetime(
             df["data"].astype(str) + " " + df["hora"].astype(str), errors="coerce"
         )
-    elif "datetime" in cols:
-        dt = pd.to_datetime(df["datetime"], errors="coerce")
-    else:
+    if dt is None:
         # try any column that looks like date
         cand = [c for c in df.columns if "data" in c or "date" in c or "dia" in c]
         if cand:
@@ -80,7 +120,39 @@ def _infer_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _read_csv_auto(path: Path) -> pd.DataFrame:
+    """Lê CSV detectando separador e com fallback de encoding.
+
+    Tenta UTF-8 e, em caso de erro, usa Latin-1/CP1252 (arquivos ONS podem vir
+    nesses encodings). Mantém o sniff de separador ("," ou ";").
+
+    Args:
+      path (Path): Caminho do arquivo.
+
+    Returns:
+      pandas.DataFrame: DataFrame com as colunas brutas.
+    """
+    encodings = ["utf-8", "latin1", "cp1252"]
+    last_err = None
+    for enc in encodings:
+        try:
+            return pd.read_csv(path, sep=None, engine="python", encoding=enc)
+        except UnicodeDecodeError as e:
+            last_err = e
+            continue
+    # Se todas falharem, relança a última
+    raise last_err if last_err else RuntimeError(f"Falha ao ler CSV: {path}")
+
+
 def _ensure_daily_sum(df: pd.DataFrame) -> pd.DataFrame:
+    """Reamostra para diário somando os valores (ex.: MWmed/h → MWh/dia).
+
+    Args:
+      df (pandas.DataFrame): Série horária.
+
+    Returns:
+      pandas.DataFrame: Série diária pela soma.
+    """
     if not isinstance(df.index, pd.DatetimeIndex):
         raise ValueError("Índice temporal não é DatetimeIndex")
     # Para séries de energia horárias em MWmed, somar no dia ≈ MWh/dia
@@ -88,6 +160,14 @@ def _ensure_daily_sum(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _ensure_daily_mean(df: pd.DataFrame) -> pd.DataFrame:
+    """Reamostra para diário usando média dos valores.
+
+    Args:
+      df (pandas.DataFrame): Série temporal.
+
+    Returns:
+      pandas.DataFrame: Série diária pela média.
+    """
     if not isinstance(df.index, pd.DatetimeIndex):
         raise ValueError("Índice temporal não é DatetimeIndex")
     return df.resample("D").mean()
@@ -96,18 +176,30 @@ def _ensure_daily_mean(df: pd.DataFrame) -> pd.DataFrame:
 def etl_balanco_subsistema_horario(
     path: Path, out_dir: Path, submercado: str
 ) -> Optional[Path]:
-    """Transforma Balanço de Energia por Subsistema (horário) em geração diária por fonte.
+    """Transforma Balanço por Subsistema (horário) em geração diária por fonte.
 
-    Espera colunas com geração por fonte (hidráulica/térmica/eólica/solar) e uma coluna de subsistema.
-    Saída: ons_geracao_fontes_diaria.csv com colunas em MWh/dia.
+    Espera colunas de geração (hidráulica/térmica/eólica/solar) e subsistema
+    (id ou nome). Gera `ons_geracao_fontes_diaria.csv` em MWh/dia.
+
+    Args:
+      path (Path): Arquivo bruto do ONS (horário).
+      out_dir (Path): Diretório de saída.
+      submercado (str): Submercado alvo (ex.: "SE/CO").
+
+    Returns:
+      Path|None: Caminho do CSV gerado ou None se não aplicável.
     """
     if not path.exists():
         return None
-    df0 = pd.read_csv(path)
+    df0 = _read_csv_auto(path)
     df0 = _normalize_columns(df0)
 
     # identificar coluna de subsistema
-    sub_cols = [c for c in df0.columns if c in {"submercado", "subsistema"}]
+    sub_cols = [
+        c
+        for c in df0.columns
+        if c in {"submercado", "subsistema", "id_subsistema", "nom_subsistema"}
+    ]
     if not sub_cols:
         warnings.warn(
             "Coluna de subsistema não encontrada; assumindo arquivo já filtrado para SE/CO."
@@ -160,23 +252,41 @@ def etl_balanco_subsistema_horario(
 def etl_intercambio_horario(
     path: Path, out_dir: Path, submercado: str
 ) -> Optional[Path]:
-    """Transforma Intercâmbios Entre Subsistemas (horário) em import/export diário do submercado.
+    """Transforma Intercâmbios (horário) em import/export diários do submercado.
 
-    Espera colunas que indiquem 'de' e 'para' subsistema e uma coluna de valor (MWmed).
-    Saída: ons_intercambio_diario.csv com import_mwh/export_mwh por dia.
+    Args:
+      path (Path): Arquivo bruto do ONS (horário).
+      out_dir (Path): Diretório de saída.
+      submercado (str): Submercado alvo.
+
+    Returns:
+      Path|None: CSV `ons_intercambio_diario.csv` gerado ou None.
     """
     if not path.exists():
         return None
-    df = pd.read_csv(path)
+    df = _read_csv_auto(path)
     df = _normalize_columns(df)
     # identificar colunas from/to e valor
     from_cols = [
-        c for c in df.columns if c in {"de", "from", "origem", "subsistema_de"}
+        c
+        for c in df.columns
+        if c in {"de", "from", "origem", "subsistema_de", "id_subsistema_origem", "nom_subsistema_origem"}
+        or ("origem" in c)
     ]
     to_cols = [
-        c for c in df.columns if c in {"para", "to", "destino", "subsistema_para"}
+        c
+        for c in df.columns
+        if c in {"para", "to", "destino", "subsistema_para", "id_subsistema_destino", "nom_subsistema_destino"}
+        or ("destino" in c)
     ]
-    val_cols = [c for c in df.columns if c in {"valor", "mwmed", "mw", "potencia"}]
+    # detectar coluna de valor: contém 'mwmed' ou 'valor' ou 'intercambio'
+    val_cols = [
+        c
+        for c in df.columns
+        if c in {"valor", "mwmed", "mw", "potencia"}
+        or ("mwmed" in c)
+        or ("intercambio" in c)
+    ]
     if not from_cols or not to_cols or not val_cols:
         warnings.warn(
             "Não foi possível identificar colunas de 'de/para/valor' em Intercâmbio; pulando."
@@ -203,10 +313,19 @@ def etl_intercambio_horario(
 
 
 def etl_ena_diaria(path: Path, out_dir: Path, submercado: str) -> Optional[Path]:
-    """Padroniza ENA Diário por Subsistema → ons_ena_diaria.csv com coluna ena_mwmed."""
+    """Padroniza ENA Diário por Subsistema em `ons_ena_diaria.csv` (ena_mwmed).
+
+    Args:
+      path (Path): Arquivo diário do ONS.
+      out_dir (Path): Diretório de saída.
+      submercado (str): Submercado alvo.
+
+    Returns:
+      Path|None: Caminho do CSV gerado ou None.
+    """
     if not path.exists():
         return None
-    df = pd.read_csv(path)
+    df = _read_csv_auto(path)
     df = _normalize_columns(df)
     # filtra submercado
     sub_cols = [c for c in df.columns if c in {"submercado", "subsistema"}]
@@ -241,12 +360,15 @@ def etl_ena_diaria(path: Path, out_dir: Path, submercado: str) -> Optional[Path]
 
     # inferir data
     if "data" not in df.columns:
-        cand = [c for c in df.columns if "data" in c or "date" in c]
-        if cand:
-            df = df.rename(columns={cand[0]: "data"})
+        if "din_instante" in df.columns:
+            df = df.rename(columns={"din_instante": "data"})
         else:
-            warnings.warn("Coluna de data não encontrada para ENA; pulando.")
-            return None
+            cand = [c for c in df.columns if "data" in c or "date" in c]
+            if cand:
+                df = df.rename(columns={cand[0]: "data"})
+            else:
+                warnings.warn("Coluna de data não encontrada para ENA; pulando.")
+                return None
     dfd = df[["data", val_col]].rename(columns={val_col: "ena_mwmed"}).copy()
     dfd["data"] = pd.to_datetime(dfd["data"], errors="coerce")
     dfd = dfd.dropna(subset=["data"]).sort_values("data")
@@ -256,10 +378,19 @@ def etl_ena_diaria(path: Path, out_dir: Path, submercado: str) -> Optional[Path]
 
 
 def etl_ear_diaria(path: Path, out_dir: Path, submercado: str) -> Optional[Path]:
-    """Padroniza EAR Diário por Subsistema → ons_ear_diaria.csv com coluna ear_pct."""
+    """Padroniza EAR Diário por Subsistema em `ons_ear_diaria.csv` (ear_pct).
+
+    Args:
+      path (Path): Arquivo diário do ONS.
+      out_dir (Path): Diretório de saída.
+      submercado (str): Submercado alvo.
+
+    Returns:
+      Path|None: Caminho do CSV gerado ou None.
+    """
     if not path.exists():
         return None
-    df = pd.read_csv(path)
+    df = _read_csv_auto(path)
     df = _normalize_columns(df)
     # filtra submercado
     sub_cols = [c for c in df.columns if c in {"submercado", "subsistema"}]
@@ -290,12 +421,15 @@ def etl_ear_diaria(path: Path, out_dir: Path, submercado: str) -> Optional[Path]
 
     # inferir data
     if "data" not in df.columns:
-        cand = [c for c in df.columns if "data" in c or "date" in c]
-        if cand:
-            df = df.rename(columns={cand[0]: "data"})
+        if "din_instante" in df.columns:
+            df = df.rename(columns={"din_instante": "data"})
         else:
-            warnings.warn("Coluna de data não encontrada para EAR; pulando.")
-            return None
+            cand = [c for c in df.columns if "data" in c or "date" in c]
+            if cand:
+                df = df.rename(columns={cand[0]: "data"})
+            else:
+                warnings.warn("Coluna de data não encontrada para EAR; pulando.")
+                return None
     dfd = df[["data", val_col]].rename(columns={val_col: "ear_pct"}).copy()
     dfd["data"] = pd.to_datetime(dfd["data"], errors="coerce")
     dfd = dfd.dropna(subset=["data"]).sort_values("data")
@@ -307,7 +441,16 @@ def etl_ear_diaria(path: Path, out_dir: Path, submercado: str) -> Optional[Path]
 def _explode_month_to_daily(
     df: pd.DataFrame, value_col: str, date_col: str = "data"
 ) -> pd.DataFrame:
-    """Distribui um valor mensal uniformemente pelos dias do mês, retornando série diária."""
+    """Distribui valor mensal uniformemente pelos dias do mês (série diária).
+
+    Args:
+      df (pandas.DataFrame): Tabela mensal com colunas de data e valor.
+      value_col (str): Nome da coluna de valor mensal (MWh).
+      date_col (str): Nome da coluna de data mensal.
+
+    Returns:
+      pandas.DataFrame: Série diária com soma dos valores por dia do mês.
+    """
     dfe = []
     for _, row in df.iterrows():
         d = pd.to_datetime(row[date_col])
@@ -327,17 +470,24 @@ def _explode_month_to_daily(
 def etl_constrained_off_mensal(
     path: Path, out_dir: Path, fonte: str, submercado: str
 ) -> Optional[Path]:
-    """Padroniza Constrained-off mensal (eólica/FV) → série diária em MWh.
+    """Padroniza Constrained-off mensal (eólica/FV) em série diária (MWh).
 
-    fonte: 'eolica' ou 'fv'. Saída: ons_cortes_<fonte>_diario.csv com coluna corte_<fonte>_mwh
+    Args:
+      path (Path): Arquivo mensal do ONS.
+      out_dir (Path): Diretório de saída.
+      fonte (str): "eolica" ou "fv".
+      submercado (str): Submercado alvo.
+
+    Returns:
+      Path|None: Caminho do CSV diário gerado ou None.
     """
     if not path.exists():
         return None
-    df = pd.read_csv(path)
+    df = _read_csv_auto(path)
     df = _normalize_columns(df)
 
     # filtra submercado se disponível
-    sub_cols = [c for c in df.columns if c in {"submercado", "subsistema"}]
+    sub_cols = [c for c in df.columns if c in {"submercado", "subsistema", "id_subsistema", "nom_subsistema"}]
     if sub_cols:
         sub_col = sub_cols[0]
         df = df.loc[df[sub_col].apply(lambda x: _match_submercado(str(x), submercado))]
@@ -347,8 +497,9 @@ def etl_constrained_off_mensal(
 
     # detectar data mensal e valor (MWh)
     if "data" not in df.columns:
-        # tenta 'competencia', 'mes'
-        if "competencia" in df.columns:
+        if "din_instante" in df.columns:
+            df = df.rename(columns={"din_instante": "data"})
+        elif "competencia" in df.columns:
             df = df.rename(columns={"competencia": "data"})
         elif {"ano", "mes"} <= set(df.columns):
             df["data"] = pd.to_datetime(
@@ -357,35 +508,62 @@ def etl_constrained_off_mensal(
         else:
             warnings.warn("Coluna mensal de data não encontrada nos cortes; pulando.")
             return None
-    # valor
-    val_candidates = [
-        c
-        for c in df.columns
-        if any(k in c for k in ["mwh", "energia_nao_gerada", "corte", "restricao"])
-    ]
-    if not val_candidates:
-        warnings.warn("Coluna de valor (MWh) não encontrada nos cortes; pulando.")
-        return None
-    vcol = val_candidates[0]
 
-    dfd = df[["data", vcol]].copy()
-    dfd["data"] = pd.to_datetime(dfd["data"], errors="coerce")
-    dfd = dfd.dropna(subset=["data"]).sort_values("data")
-    daily = _explode_month_to_daily(dfd, vcol, date_col="data")
-    daily = daily.rename(columns={vcol: f"corte_{fonte}_mwh"})
+    df["data"] = pd.to_datetime(df["data"], errors="coerce")
+    df = df.dropna(subset=["data"]).sort_values("data")
+
+    # 1) Tenta identificar coluna de MWh diretamente
+    vcol = None
+    for c in df.columns:
+        nc = _norm_text(c)
+        if any(k in nc for k in ["mwh", "energia_nao_gerada", "corte", "restricao"]):
+            vcol = c
+            break
+
+    if vcol is not None:
+        dfd = df[["data", vcol]].copy()
+        daily = _explode_month_to_daily(dfd, vcol, date_col="data")
+        daily = daily.rename(columns={vcol: f"corte_{fonte}_mwh"})
+    else:
+        # 2) Caso não exista MWh explícito, calcula a partir de estimada - verificada (MWmed)
+        if {"val_geracaoestimada", "val_geracaoverificada"} <= set(df.columns):
+            tmp = df[["data", "val_geracaoestimada", "val_geracaoverificada"]].copy()
+            tmp["diff_mwmed"] = (tmp["val_geracaoestimada"] - tmp["val_geracaoverificada"]).clip(lower=0)
+            # agrega por mês e converte para MWh (24 * dias_do_mes)
+            g = tmp.groupby(tmp["data"].dt.to_period("M"))[["diff_mwmed"]].sum()
+            g.index = g.index.to_timestamp(how="start")
+            days = g.index.to_series().apply(lambda d: (d + pd.offsets.MonthEnd(0)).day)
+            mwh = g["diff_mwmed"] * 24 * days
+            dfd = pd.DataFrame({"data": mwh.index, f"corte_{fonte}_mwh": mwh.values})
+            daily = _explode_month_to_daily(dfd, f"corte_{fonte}_mwh", date_col="data")
+        else:
+            warnings.warn(
+                "Coluna de MWh inexistente e não foi possível calcular a partir de estimada/verificada; pulando."
+            )
+            return None
+
     out = out_dir / f"ons_cortes_{fonte}_diario.csv"
     daily.to_csv(out, index=False)
     return out
 
 
 def etl_carga(input_path: Path, out_dir: Path, submercado: str) -> Optional[Path]:
-    """Padroniza carga diária para ter coluna 'carga_mwh' e 'data'.
+    """Padroniza carga para diário com colunas `data` e `carga_mwh`.
 
-    Se vier horária (carga MWmed/h), soma para diário. Se já vier diário, apenas renomeia/ordena.
+    - Se vier horária (MWmed/h): soma por dia (≈ MWh/dia).
+    - Se vier diária: apenas normaliza nomes e ordena.
+
+    Args:
+      input_path (Path): Arquivo de carga (diário ou horário).
+      out_dir (Path): Diretório de saída.
+      submercado (str): Submercado alvo.
+
+    Returns:
+      Path|None: Caminho do CSV diário gerado ou None.
     """
     if not input_path.exists():
         return None
-    df = pd.read_csv(input_path)
+    df = _read_csv_auto(input_path)
     df = _normalize_columns(df)
 
     # filtra submercado se existir
@@ -443,60 +621,15 @@ def etl_carga(input_path: Path, out_dir: Path, submercado: str) -> Optional[Path
     return out
 
 
-def maybe_fetch_nasa_power(out_dir: Path, overwrite: bool = False) -> Optional[Path]:
-    """Opcional: baixa e agrega NASA POWER diário para Goiás e salva clima_go_diario.csv.
-
-    Requer 'requests'. Se não houver rede ou a lib não estiver instalada, apenas retorna None.
-    """
-    out_path = out_dir / "clima_go_diario.csv"
-    if out_path.exists() and not overwrite:
-        return out_path
-    try:
-        import requests  # type: ignore
-    except Exception:
-        warnings.warn(
-            "Biblioteca 'requests' não instalada; pulando fetch da NASA POWER."
-        )
-        return None
-
-    # pontos dentro dos limites de goiás (aprox)
-    # pontos = [(-19,-51), (-18,-53), (-18,-52), (-18,-51), (-18,-50), (-18.00,-49.70), (-18,-49), (-18,-48), (-17,-53), (-17,-52), (-17,-51), (-17,-50), (-17,-49), (-17,-48), (-16.70,-49.30), (-16,-52), (-16,-51), (-16,-50), (-16,-49), (-15.90,-48.20), (-15,-51), (-15,-50), (-15,-49), (-15,-48), (-15,-47), (-14,-50), (-14,-49), (-14,-48), (-14,-47), (-13.60,-46.90), (-13,-50), (-13,-49)]
-    ini, fim = "2018-01-01", pd.Timestamp.today().strftime("%Y-%m-%d")
-
-    def baixa(lat: float, lon: float) -> pd.DataFrame:
-        url = (
-            "https://power.larc.nasa.gov/api/temporal/daily/point"
-            f"?parameters=ALLSKY_SFC_SW_DWN,T2M,PRECTOTCORR&community=RE&longitude={lon}&latitude={lat}"
-            f"&start={ini.replace('-', '')}&end={fim.replace('-', '')}&format=JSON"
-        )
-        r = requests.get(url, timeout=60)
-        r.raise_for_status()
-        j = r.json()["properties"]["parameter"]
-        df = pd.DataFrame(
-            {
-                "data": pd.to_datetime(pd.Series(j["ALLSKY_SFC_SW_DWN"]).index),
-                "ghi": list(j["ALLSKY_SFC_SW_DWN"].values()),
-                "temp2m_c": list(j["T2M"].values()),
-                "precipitacao_mm": list(j["PRECTOTCORR"].values()),
-            }
-        )
-        return df
-
-    dfs = [baixa(lat, lon) for lat, lon in pontos]
-    df = dfs[0][["data", "ghi", "temp2m_c", "precipitacao_mm"]].copy()
-    for d in dfs[1:]:
-        df[["ghi", "temp2m_c", "precipitacao_mm"]] += d[
-            ["ghi", "temp2m_c", "precipitacao_mm"]
-        ]
-    df[["ghi", "temp2m_c", "precipitacao_mm"]] /= len(dfs)
-    df.to_csv(out_path, index=False)
-    return out_path
+"""
+ETL para dados do ONS: converte arquivos brutos (horários/mensais) em CSVs diários padronizados
+esperados pelo pipeline. Meteorologia (NASA ou outros provedores) vive em `src/meteo.py`.
+"""
 
 
 def main():
-    ap = argparse.ArgumentParser(
-        description="ETL ONS/NASA → CSVs diários esperados pelo pipeline."
-    )
+    """CLI do ETL ONS: converte brutos em diários padronizados (CSV)."""
+    ap = argparse.ArgumentParser(description="ETL ONS → CSVs diários esperados pelo pipeline.")
     ap.add_argument(
         "--raw-dir", default="data/raw", help="Diretório com arquivos brutos baixados."
     )
@@ -507,11 +640,6 @@ def main():
     )
     ap.add_argument(
         "--submercado", default="SE/CO", help="Submercado alvo (ex.: 'SE/CO')."
-    )
-    ap.add_argument(
-        "--fetch-nasa",
-        action="store_true",
-        help="Baixa NASA POWER e salva clima_go_diario.csv.",
     )
     ap.add_argument(
         "--overwrite",
@@ -552,12 +680,6 @@ def main():
     produced["cortes_fv"] = etl_constrained_off_mensal(
         paths["corte_fv"], out, "fv", args.submercado
     )
-
-    if args.fetch_nasa:
-        try:
-            produced["clima"] = maybe_fetch_nasa_power(out, overwrite=args.overwrite)
-        except Exception as e:
-            warnings.warn(f"Falha ao baixar NASA POWER: {e}")
 
     # feedback
     for k, v in produced.items():

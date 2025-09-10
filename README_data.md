@@ -95,11 +95,14 @@ print("Salvo em data/raw/clima_go_diario.csv", df.shape)
 - Parâmetros úteis:
   - Submercado (padrão `SE/CO`): `python main.py data --submercado "SE/CO"`
   - Incluir meteorologia (NASA): `python main.py data --incluir-meteorologia`
-  - Sobrescrever saídas do ETL: `python main.py data --overwrite`
+  - Limitar período baixado (default em `configs/config.yaml: download.since`):
+    - `python main.py data --since 2022` (ou `--since 2022-01`)
+  - Não sobrescrever arquivos já baixados (padrão): omitindo `--overwrite` o downloader pula conjuntos cujo CSV final já exista.
+  - Forçar re-download: `python main.py data --overwrite`
 
 Notas:
 - O ETL é tolerante a variações comuns de nomes de colunas. Se algum arquivo do ONS vier com layout muito diferente, ajuste os nomes conforme os sugeridos acima ou me avise que eu amplio os mapeamentos no `src/etl_ons.py`.
- - O downloader (`src/fetch_ons.py`) escolhe automaticamente o recurso mais adequado (CSV/XLSX/ZIP mais recente). Caso o portal mude nomes/títulos, podemos ajustar as queries no próprio script.
+- O downloader (`src/fetch_ons.py`) baixa e concatena todos os recursos mensais/anuais dentro do período (ex.: `since=2022`), gerando CSVs consolidados em `data/raw/` com os nomes esperados pelo ETL.
 
 ### Observações de consistência
 - Manter **nomes de colunas exatamente** como definidos (o código depende deles).  
