@@ -15,6 +15,23 @@ from joblib import dump
 from src.data_loader import load_all_sources
 from src.feature_engineer import build_features_weekly
 
+# Mapeamento estável de rótulos (string → inteiro)
+LABEL_MAP = {"baixo": 0, "medio": 1, "alto": 2}
+INV_LABEL_MAP = {v: k for k, v in LABEL_MAP.items()}
+
+
+def encode_labels(y: pd.Series) -> pd.Series:
+    """Encoda rótulos de string para inteiros estáveis 0/1/2.
+
+    Lança erro se encontrar valores fora de {'baixo','medio','alto'}.
+    """
+    cats = list(LABEL_MAP.keys())
+    c = pd.Categorical(y, categories=cats, ordered=True)
+    if (c.codes < 0).any():
+        unknown = set(pd.Series(y).iloc[np.where(c.codes < 0)[0]].unique())
+        raise ValueError(f"Rótulos desconhecidos encontrados: {unknown}")
+    return pd.Series(c.codes, index=y.index, dtype=int)
+
 
 def rotular_semana(df: pd.DataFrame, cfg, ref_df: pd.DataFrame | None = None) -> pd.Series:
     """Gera rótulos semanais (baixo|medio|alto) com base na margem e ajustes.
@@ -155,10 +172,14 @@ def main(config_path="configs/config.yaml"):
             if len(Xtr_ok) == 0 or len(Xte_ok) == 0:
                 continue
 
-            model.fit(Xtr_ok, ytr_ok)
+            # Encoda rótulos para inteiros (0=baixo,1=medio,2=alto)
+            ytr_enc = encode_labels(ytr_ok)
+            yte_enc = encode_labels(yte_ok)
+
+            model.fit(Xtr_ok, ytr_enc)
             pred = model.predict(Xte_ok)
-            f1s.append(f1_score(yte_ok, pred, average="macro"))
-            bals.append(balanced_accuracy_score(yte_ok, pred))
+            f1s.append(f1_score(yte_enc, pred, average="macro"))
+            bals.append(balanced_accuracy_score(yte_enc, pred))
         resultados.append(
             {
                 "modelo": mcfg["name"],
@@ -173,7 +194,16 @@ def main(config_path="configs/config.yaml"):
             y_full = y_full.shift(-H)
         idx_ok = y_full.dropna().index
         X_full_ok, y_full_ok = X.loc[idx_ok], y_full.loc[idx_ok]
-        model.fit(X_full_ok, y_full_ok)
+        # Encoda rótulos no ajuste final
+        y_full_enc = encode_labels(y_full_ok)
+        model.fit(X_full_ok, y_full_enc)
+
+        # Anexa mapeamentos ao artefato para uso na avaliação/inferência
+        try:
+            setattr(model, "label_mapping_", LABEL_MAP)
+            setattr(model, "inv_label_mapping_", INV_LABEL_MAP)
+        except Exception:
+            pass
         dump(model, out_dir / f"{mcfg['name']}.joblib")
 
     rep_dir = Path(cfg["paths"]["reports_dir"])
