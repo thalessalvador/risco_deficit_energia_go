@@ -553,6 +553,131 @@ def etl_constrained_off_mensal(
     return out
 
 
+def etl_constrained_off_mensal(
+    path: Path, out_dir: Path, fonte: str, submercado: str
+) -> Optional[Path]:
+    """(Override) Constrained-off (eólica/FV) → série diária (MWh) a partir de intradiário ou mensal.
+
+    Suporta:
+      - Arquivos mensais agregados (MWh) → explode uniformemente por dia do mês.
+      - Séries intra-diárias (ex.: 30 min) com referência/geração → integra energia não gerada.
+    """
+    if not path.exists():
+        return None
+    df = _read_csv_auto(path)
+    df = _normalize_columns(df)
+
+    # filtra submercado se disponível
+    sub_cols = [c for c in df.columns if c in {"submercado", "subsistema", "id_subsistema", "nom_subsistema"}]
+    if sub_cols:
+        sub_col = sub_cols[0]
+        df = df.loc[df[sub_col].apply(lambda x: _match_submercado(str(x), submercado))]
+    if df.empty:
+        warnings.warn(f"Constrained-off {fonte} sem linhas para o submercado.")
+        return None
+
+    # coluna de data
+    original_cols = set(df.columns)
+    if "data" not in df.columns:
+        if "din_instante" in df.columns:
+            df = df.rename(columns={"din_instante": "data"})
+        elif "competencia" in df.columns:
+            df = df.rename(columns={"competencia": "data"})
+        elif {"ano", "mes"} <= original_cols:
+            df["data"] = pd.to_datetime(dict(year=df["ano"].astype(int), month=df["mes"].astype(int), day=1))
+        else:
+            warnings.warn("Coluna de data não encontrada nos cortes; pulando.")
+            return None
+
+    df["data"] = pd.to_datetime(df["data"], errors="coerce")
+    df = df.dropna(subset=["data"]).sort_values("data")
+
+    # Heurística de intra-diário: presença de colunas de geração e passo médio < 6h
+    has_gen = any(c in df.columns for c in [
+        "val_geracao", "val_geracaolimitada", "val_geracaoreferencia", "val_geracaoreferenciafinal"
+    ])
+    if len(df) >= 10:
+        dt = df["data"].sort_values().diff().dt.total_seconds().dropna()
+        med_hours = float(np.median(dt) / 3600.0) if len(dt) else None
+    else:
+        med_hours = None
+    is_intraday = bool(has_gen and med_hours is not None and med_hours < 6)
+
+    if is_intraday:
+        df2 = df.copy()
+        for c in [
+            "val_geracao",
+            "val_geracaolimitada",
+            "val_disponibilidade",
+            "val_geracaoreferencia",
+            "val_geracaoreferenciafinal",
+        ]:
+            if c in df2.columns:
+                df2[c] = pd.to_numeric(df2[c], errors="coerce")
+
+        # referência prioritária
+        ref_col = None
+        for cand in ["val_geracaoreferenciafinal", "val_geracaoreferencia", "val_disponibilidade"]:
+            if cand in df2.columns and pd.api.types.is_numeric_dtype(df2[cand]):
+                ref_col = cand
+                break
+        gen_col = "val_geracao" if "val_geracao" in df2.columns else None
+        lim_col = "val_geracaolimitada" if "val_geracaolimitada" in df2.columns else None
+
+        if ref_col is None or (gen_col is None and lim_col is None):
+            warnings.warn("Cortes (intradiário): sem referência/geração suficientes; pulando.")
+            return None
+
+        if lim_col is not None and pd.api.types.is_numeric_dtype(df2[lim_col]):
+            base_diff = (df2[ref_col] - df2[lim_col]).clip(lower=0)
+        else:
+            base_diff = (df2[ref_col] - df2[gen_col]).clip(lower=0)
+
+        # integra energia (MWh) por dia
+        df2 = df2.set_index(pd.to_datetime(df2["data"]))
+        dt_next = df2.index.to_series().shift(-1) - df2.index.to_series()
+        dt_h = dt_next.dt.total_seconds() / 3600.0
+        med_dt = float(dt_h.dropna().median()) if dt_h.notna().any() else 0.5
+        if not np.isfinite(med_dt) or med_dt <= 0:
+            med_dt = 0.5
+        dt_h = dt_h.fillna(med_dt)
+        energy_mwh = base_diff.fillna(0.0) * dt_h.values
+        daily = energy_mwh.groupby(df2.index.floor("D")).sum().reset_index()
+        daily.columns = ["data", f"corte_{fonte}_mwh"]
+    else:
+        # mensal agregado
+        vcol = None
+        for c in df.columns:
+            nc = _norm_text(c)
+            if any(k in nc for k in ["mwh", "energia_nao_gerada", "corte", "restricao"]):
+                if pd.api.types.is_numeric_dtype(df[c]):
+                    vcol = c
+                    break
+
+        if vcol is not None:
+            dfd = df[["data", vcol]].copy()
+            dfd[vcol] = pd.to_numeric(dfd[vcol], errors="coerce").fillna(0.0)
+            daily = _explode_month_to_daily(dfd, vcol, date_col="data")
+            daily = daily.rename(columns={vcol: f"corte_{fonte}_mwh"})
+        elif {"val_geracaoestimada", "val_geracaoverificada"} <= set(df.columns):
+            tmp = df[["data", "val_geracaoestimada", "val_geracaoverificada"]].copy()
+            for c in ["val_geracaoestimada", "val_geracaoverificada"]:
+                tmp[c] = pd.to_numeric(tmp[c], errors="coerce")
+            tmp["diff_mwmed"] = (tmp["val_geracaoestimada"] - tmp["val_geracaoverificada"]).clip(lower=0)
+            g = tmp.groupby(tmp["data"].dt.to_period("M"))[["diff_mwmed"]].sum()
+            g.index = g.index.to_timestamp(how="start")
+            days = g.index.to_series().apply(lambda d: (d + pd.offsets.MonthEnd(0)).day)
+            mwh = g["diff_mwmed"] * 24 * days
+            dfd = pd.DataFrame({"data": mwh.index, f"corte_{fonte}_mwh": mwh.values})
+            daily = _explode_month_to_daily(dfd, f"corte_{fonte}_mwh", date_col="data")
+        else:
+            warnings.warn("Cortes (mensal): sem coluna de MWh e sem pares estimada/verificada; pulando.")
+            return None
+
+    out = out_dir / f"ons_cortes_{fonte}_diario.csv"
+    daily.to_csv(out, index=False)
+    return out
+
 def etl_carga(input_path: Path, out_dir: Path, submercado: str) -> Optional[Path]:
     """Padroniza carga para diário com colunas `data` e `carga_mwh`.
 

@@ -96,7 +96,7 @@ print("Salvo em data/raw/clima_go_diario.csv", df.shape)
   - Submercado (padrão `SE/CO`): `python main.py data --submercado "SE/CO"`
   - Incluir meteorologia (NASA): `python main.py data --incluir-meteorologia`
   - Limitar período baixado (default em `configs/config.yaml: download.since`):
-    - `python main.py data --since 2022` (ou `--since 2022-01`)
+    - `python main.py data --since 2022` 
   - Não sobrescrever arquivos já baixados (padrão): omitindo `--overwrite` o downloader pula conjuntos cujo CSV final já exista.
   - Forçar re-download: `python main.py data --overwrite`
 

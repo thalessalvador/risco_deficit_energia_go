@@ -2,6 +2,7 @@
 from __future__ import annotations
 import yaml
 from pathlib import Path
+import json
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import TimeSeriesSplit
@@ -97,6 +98,115 @@ def rotular_semana(df: pd.DataFrame, cfg, ref_df: pd.DataFrame | None = None) ->
 
     return y
 
+def compute_label_thresholds(cfg, ref_df: pd.DataFrame) -> dict:
+    """Calcula thresholds fixos de rotulagem a partir do conjunto de treino/validação.
+
+    Retorna um dicionário JSON-serializável contendo valores de quantis para a margem,
+    thresholds para EAR/ENA (se existirem), parâmetros de curtailment e metadados.
+    """
+    r = cfg["problem"]["label_rules"]
+    margem_col = r["coluna_margem"]
+    q_baixo = float(r["q_baixo"]) if "q_baixo" in r else 0.1
+    q_medio = float(r["q_medio"]) if "q_medio" in r else 0.4
+
+    has_margem = margem_col in ref_df.columns
+    thr_baixo = float(ref_df[margem_col].quantile(q_baixo)) if has_margem else None
+    thr_medio = float(ref_df[margem_col].quantile(q_medio)) if has_margem else None
+
+    ear_col = r.get("coluna_ear")
+    ear_q = float(r.get("ear_q_baixo", 0.2)) if ear_col else None
+    ear_thr = float(ref_df[ear_col].quantile(ear_q)) if ear_col and ear_col in ref_df.columns else None
+
+    ena_col = r.get("coluna_ena")
+    ena_q = float(r.get("ena_q_baixo", 0.2)) if ena_col else None
+    ena_thr = float(ref_df[ena_col].quantile(ena_q)) if ena_col and ena_col in ref_df.columns else None
+    k = int(r.get("janelas_consecutivas_ena", 2))
+
+    cd = r.get("curtail_downgrade", {}) or {}
+    ratio_thr = float(cd.get("corte_ratio_thr", 0.05))
+    req_no_import = bool(cd.get("requer_saldo_importador_nao_positivo", True))
+
+    thresholds = {
+        "margem": {
+            "col": margem_col,
+            "q_baixo": q_baixo,
+            "q_baixo_value": thr_baixo,
+            "q_medio": q_medio,
+            "q_medio_value": thr_medio,
+        },
+        "ear": {
+            "col": ear_col,
+            "q_baixo": ear_q,
+            "q_baixo_value": ear_thr,
+        },
+        "ena": {
+            "col": ena_col,
+            "q_baixo": ena_q,
+            "q_baixo_value": ena_thr,
+            "janelas_consecutivas": k,
+        },
+        "curtail": {
+            "ratio_thr": ratio_thr,
+            "requer_saldo_importador_nao_positivo": req_no_import,
+        },
+        "meta": {
+            "train_start": str(ref_df.index.min()) if len(ref_df.index) else None,
+            "train_end": str(ref_df.index.max()) if len(ref_df.index) else None,
+        },
+    }
+    return thresholds
+
+def rotular_semana_com_thresholds(df: pd.DataFrame, cfg, thresholds: dict) -> pd.Series:
+    """Rotula com thresholds fixos (sem recalcular quantis).
+
+    Aplica a mesma lógica de rotular_semana usando valores numéricos persistidos.
+    """
+    r = cfg["problem"]["label_rules"]
+    margem_info = thresholds.get("margem", {})
+    margem_col = margem_info.get("col", r.get("coluna_margem"))
+    thr_baixo = margem_info.get("q_baixo_value")
+    thr_medio = margem_info.get("q_medio_value")
+
+    if margem_col not in df.columns or thr_baixo is None or thr_medio is None:
+        raise ValueError("Thresholds de margem ausentes ou coluna não encontrada para rotulagem.")
+
+    margem = df[margem_col].copy()
+    y = pd.Series(index=df.index, dtype=object)
+    y[margem <= thr_baixo] = "alto"
+    y[(margem > thr_baixo) & (margem <= thr_medio)] = "medio"
+    y[margem > thr_medio] = "baixo"
+
+    # ajuste por curtailment
+    cd = thresholds.get("curtail", {})
+    ratio_thr = float(cd.get("ratio_thr", 0.05))
+    req_no_import = bool(cd.get("requer_saldo_importador_nao_positivo", True))
+    ratio = df.get("ratio_corte_renovavel_w")
+    saldo_import = df.get("saldo_importador_mwh_sum_w")
+    if ratio is not None:
+        cond_ratio = ratio.fillna(0) > ratio_thr
+        cond_import = True
+        if req_no_import and (saldo_import is not None):
+            cond_import = saldo_import.fillna(0) <= 0
+        cond = cond_ratio & cond_import
+        y.loc[cond & (y == "alto")] = "medio"
+        y.loc[cond & (y == "medio")] = "baixo"
+
+    # overrides hidrológicos
+    ear_info = thresholds.get("ear", {})
+    ear_col = ear_info.get("col")
+    ear_thr = ear_info.get("q_baixo_value")
+    if ear_col and (ear_col in df.columns) and (ear_thr is not None):
+        y[df[ear_col] <= ear_thr] = "alto"
+
+    ena_info = thresholds.get("ena", {})
+    ena_col = ena_info.get("col")
+    ena_thr = ena_info.get("q_baixo_value")
+    k = int(ena_info.get("janelas_consecutivas", r.get("janelas_consecutivas_ena", 2)))
+    if ena_col and (ena_col in df.columns) and (ena_thr is not None):
+        ena_low = (df[ena_col] <= ena_thr).rolling(k).sum() >= k
+        y[ena_low.fillna(False)] = "alto"
+
+    return y
 
 def make_model(model_cfg):
     """Cria o estimador conforme o bloco `model_cfg` (logreg ou xgboost).
@@ -146,8 +256,30 @@ def main(config_path="configs/config.yaml"):
     # limpa colunas completamente vazias; imputação fica no pipeline (evita vazamento)
     Xw = Xw.dropna(axis=1, how="all")
 
+    # --- Hold-out split for final evaluation ---
+    holdout_frac = float(cfg.get("modeling", {}).get("holdout_fraction", 0.2))
+    holdout_frac = 0.0 if holdout_frac < 0 else holdout_frac
+    test_size = int(np.ceil(len(Xw) * holdout_frac)) if holdout_frac > 0 else 0
+    if test_size >= len(Xw):
+        test_size = max(1, len(Xw) // 5)
+    if test_size > 0:
+        train_val_df = Xw.iloc[:-test_size]
+        test_df = Xw.iloc[-test_size:]
+    else:
+        train_val_df = Xw.copy()
+        test_df = Xw.iloc[0:0]
+    feats_dir = Path(cfg["paths"]["features_dir"])
+    feats_dir.mkdir(parents=True, exist_ok=True)
+    train_val_df.to_parquet(feats_dir / "features_trainval.parquet")
+    if len(test_df) > 0:
+        test_df.to_parquet(feats_dir / "features_test_holdout.parquet")
+    print(f"[train] Hold-out saved: train_val={len(train_val_df)} weeks, test={len(test_df)} weeks in {feats_dir}.")
+
+    # thresholds fixos a partir do conjunto de treino/validação
+    thresholds = compute_label_thresholds(cfg, train_val_df)
+
     H = int(cfg.get("problem", {}).get("forecast_horizon_weeks", 1))
-    X = Xw
+    X = train_val_df
 
     resultados = []
     tss = TimeSeriesSplit(n_splits=cfg["modeling"]["cv"]["n_splits"])
@@ -188,7 +320,7 @@ def main(config_path="configs/config.yaml"):
             }
         )
 
-        # re-ajusta no conjunto completo e salva artefato
+        # re-ajusta no conjunto de treino/validacao e salva artefato
         y_full = rotular_semana(X, cfg, ref_df=X)
         if H > 0:
             y_full = y_full.shift(-H)
@@ -202,8 +334,17 @@ def main(config_path="configs/config.yaml"):
         try:
             setattr(model, "label_mapping_", LABEL_MAP)
             setattr(model, "inv_label_mapping_", INV_LABEL_MAP)
+            setattr(model, "label_thresholds_", thresholds)
         except Exception:
             pass
+
+        # grava thresholds também em JSON (um por modelo)
+        try:
+            with open(out_dir / f"label_thresholds_{mcfg['name']}.json", "w", encoding="utf-8") as jf:
+                json.dump(thresholds, jf, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
         dump(model, out_dir / f"{mcfg['name']}.joblib")
 
     rep_dir = Path(cfg["paths"]["reports_dir"])

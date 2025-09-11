@@ -45,6 +45,7 @@ aggregation:
     rolling_weeks: [2, 4]
 
 modeling:
+  holdout_fraction: 0.2     # fração do período mais recente reservado para teste final (hold-out)
   metrics: ["f1_macro", "balanced_accuracy"]
   cv:
     type: "TimeSeriesSplit"
