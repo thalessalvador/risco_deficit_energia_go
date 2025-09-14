@@ -209,6 +209,25 @@ def build_features_weekly(data: Dict[str, pd.DataFrame], cfg: Dict) -> pd.DataFr
             Xw["import_total_mwh_sum_w"] - Xw["export_total_mwh_sum_w"]
         )
 
+    # Métricas de adequação simplificadas (energia):
+    # - margem vs. carga (MWh)
+    # - razão de margem de reserva (≈ proxy para PNS/Reserva Operativa)
+    # - ENS semanal aproximada (energia não suprida) e sua razão vs. demanda semanal
+    # - LOLP empírico (52 semanas) como frequência de semanas com margem negativa
+    carga_sum_cols = [c for c in Xw.columns if c.startswith("carga_mwh_") and c.endswith("_sum_w")]
+    if "margem_suprimento_w" in Xw.columns and carga_sum_cols:
+        carga_sum_col = carga_sum_cols[0]
+        # margem vs. carga (energia): suprimento - demanda
+        Xw["margem_vs_carga_w"] = Xw["margem_suprimento_w"] - Xw[carga_sum_col]
+        # razão de margem de reserva (% da demanda semanal)
+        denom = Xw[carga_sum_col].replace({0: np.nan})
+        Xw["reserve_margin_ratio_w"] = Xw["margem_vs_carga_w"] / denom
+        # ENS semanal aproximada (energia não suprida)
+        Xw["ens_week_mwh"] = (-Xw["margem_vs_carga_w"]).clip(lower=0)
+        Xw["ens_week_ratio"] = Xw["ens_week_mwh"] / denom
+        # LOLP empírico (freq. de semanas com déficit em janela móvel de 52 semanas)
+        Xw["lolp_52w"] = (Xw["margem_vs_carga_w"] < 0).rolling(52, min_periods=12).mean()
+
     # total de cortes renováveis e razão vs potencial renovável
     corte_cols = [
         c

@@ -53,8 +53,19 @@ def rotular_semana(df: pd.DataFrame, cfg, ref_df: pd.DataFrame | None = None) ->
     margem_col = r["coluna_margem"]
     q_baixo, q_med = r["q_baixo"], r["q_medio"]
 
+    # Fallback robusto de coluna de margem: tenta alternativas se a coluna pedida não existir
     if margem_col not in df.columns:
-        raise ValueError(f"Coluna '{margem_col}' não encontrada para rotulagem.")
+        candidates = [
+            margem_col,
+            "margem_vs_carga_w",
+            "margem_suprimento_w",
+            "margem_suprimento_min_w",
+        ]
+        margem_col = next((c for c in candidates if c in df.columns), None)
+        if margem_col is None:
+            raise ValueError(
+                f"Coluna de margem não encontrada para rotulagem. Tentadas: {candidates}"
+            )
 
     base = ref_df if ref_df is not None else df
     margem = df[margem_col].copy()
@@ -96,6 +107,38 @@ def rotular_semana(df: pd.DataFrame, cfg, ref_df: pd.DataFrame | None = None) ->
             ena_low = (df[ena_col] <= ena_thr).rolling(k).sum() >= k
             y[ena_low.fillna(False)] = "alto"
 
+    # Regras duras (proxies dos critérios EPE/MME/ONS) — Comentário
+    #
+    # Mapeamento pragmático semanal (determinístico) para critérios anuais:
+    # - Adequação de potência/Reserva Operativa (PNS):
+    #     reserve_margin_ratio_w = (suprimento − demanda) / demanda.
+    #     Se < 5% (reserva abaixo de 5% da demanda semanal), marcar "alto".
+    # - ENS (energia não suprida) vs. demanda:
+    #     ens_week_ratio = ENS_semana / demanda_semana.
+    #     Se ≥ 5%, marcar "alto" (proxy do CVaR_1% no limite regulatório).
+    # - LOLP (probabilidade de perda de carga):
+    #     lolp_52w = frequência móvel (52s) de semanas com déficit.
+    #     Se > 5%, marcar "alto" (proxy anual).
+    #
+    # Observação: estas regras duras atuam como overrides conservadores, após
+    # quantis e ajustes, aproximando os critérios oficiais sem simulação de cenários.
+    if bool(r.get("usar_regras_duras", True)):
+        reserva_frac = float(r.get("reserva_operativa_frac", 0.05))
+        ens_thr = float(r.get("ens_ratio_thr", 0.05))
+        lolp_thr = float(r.get("lolp_thr", 0.05))
+
+        rm = df.get("reserve_margin_ratio_w")
+        if rm is not None:
+            y[rm < reserva_frac] = "alto"
+
+        ens_ratio = df.get("ens_week_ratio")
+        if ens_ratio is not None:
+            y[ens_ratio >= ens_thr] = "alto"
+
+        lolp = df.get("lolp_52w")
+        if lolp is not None:
+            y[lolp > lolp_thr] = "alto"
+
     return y
 
 def compute_label_thresholds(cfg, ref_df: pd.DataFrame) -> dict:
@@ -109,7 +152,16 @@ def compute_label_thresholds(cfg, ref_df: pd.DataFrame) -> dict:
     q_baixo = float(r["q_baixo"]) if "q_baixo" in r else 0.1
     q_medio = float(r["q_medio"]) if "q_medio" in r else 0.4
 
-    has_margem = margem_col in ref_df.columns
+    # Fallback robusto de coluna de margem na base de referência
+    if margem_col not in ref_df.columns:
+        candidates = [
+            margem_col,
+            "margem_vs_carga_w",
+            "margem_suprimento_w",
+            "margem_suprimento_min_w",
+        ]
+        margem_col = next((c for c in candidates if c in ref_df.columns), None)
+    has_margem = bool(margem_col and margem_col in ref_df.columns)
     thr_baixo = float(ref_df[margem_col].quantile(q_baixo)) if has_margem else None
     thr_medio = float(ref_df[margem_col].quantile(q_medio)) if has_margem else None
 
@@ -154,6 +206,13 @@ def compute_label_thresholds(cfg, ref_df: pd.DataFrame) -> dict:
             "train_end": str(ref_df.index.max()) if len(ref_df.index) else None,
         },
     }
+    # Critérios/proxies regulatórios persistidos para uso consistente em avaliação/inferência
+    thresholds["regulatory_proxies"] = {
+        "usar_regras_duras": bool(r.get("usar_regras_duras", True)),
+        "reserva_operativa_frac": float(r.get("reserva_operativa_frac", 0.05)),
+        "ens_ratio_thr": float(r.get("ens_ratio_thr", 0.05)),
+        "lolp_thr": float(r.get("lolp_thr", 0.05)),
+    }
     return thresholds
 
 def rotular_semana_com_thresholds(df: pd.DataFrame, cfg, thresholds: dict) -> pd.Series:
@@ -167,8 +226,16 @@ def rotular_semana_com_thresholds(df: pd.DataFrame, cfg, thresholds: dict) -> pd
     thr_baixo = margem_info.get("q_baixo_value")
     thr_medio = margem_info.get("q_medio_value")
 
-    if margem_col not in df.columns or thr_baixo is None or thr_medio is None:
-        raise ValueError("Thresholds de margem ausentes ou coluna não encontrada para rotulagem.")
+    if margem_col not in df.columns:
+        candidates = [
+            margem_col,
+            "margem_vs_carga_w",
+            "margem_suprimento_w",
+            "margem_suprimento_min_w",
+        ]
+        margem_col = next((c for c in candidates if c in df.columns), None)
+    if (margem_col is None) or (thr_baixo is None) or (thr_medio is None):
+        raise ValueError("Thresholds/coluna de margem ausentes para rotulagem.")
 
     margem = df[margem_col].copy()
     y = pd.Series(index=df.index, dtype=object)
@@ -205,6 +272,25 @@ def rotular_semana_com_thresholds(df: pd.DataFrame, cfg, thresholds: dict) -> pd
     if ena_col and (ena_col in df.columns) and (ena_thr is not None):
         ena_low = (df[ena_col] <= ena_thr).rolling(k).sum() >= k
         y[ena_low.fillna(False)] = "alto"
+
+    # Regras duras com thresholds persistidos (evita drift entre treino e avaliação)
+    reg = thresholds.get("regulatory_proxies", {})
+    if bool(reg.get("usar_regras_duras", True)):
+        reserva_frac = float(reg.get("reserva_operativa_frac", 0.05))
+        ens_thr = float(reg.get("ens_ratio_thr", 0.05))
+        lolp_thr = float(reg.get("lolp_thr", 0.05))
+
+        rm = df.get("reserve_margin_ratio_w")
+        if rm is not None:
+            y[rm < reserva_frac] = "alto"
+
+        ens_ratio = df.get("ens_week_ratio")
+        if ens_ratio is not None:
+            y[ens_ratio >= ens_thr] = "alto"
+
+        lolp = df.get("lolp_52w")
+        if lolp is not None:
+            y[lolp > lolp_thr] = "alto"
 
     return y
 

@@ -17,9 +17,12 @@ problem:
 
   # Regras de rotulagem (quantis da margem + ajustes)
   label_rules:
-    coluna_margem: "margem_suprimento_min_w"
-    q_baixo: 0.10            # <= → "alto"
-    q_medio: 0.40            # (q_baixo, q_medio] → "medio"; > → "baixo"
+    # Coluna-base para quantis: usamos a margem vs. carga (suprimento − demanda)
+    # Esta escolha aproxima a adequação de energia semanal (quando negativa, há déficit)
+    coluna_margem: "margem_vs_carga_w"
+    # Quantis regulatórios aproximados: 5% (LOLP-alvo) e 20% como zona intermediária
+    q_baixo: 0.05            # <= → "alto" (situações piores que o p5)
+    q_medio: 0.20            # (q_baixo, q_medio] → "medio"; > → "baixo"
 
     # Ajuste por cortes (interpretação: superávit/indisponibilidade de escoamento)
     curtail_downgrade:
@@ -34,6 +37,15 @@ problem:
     ear_q_baixo: 0.20        # EAR abaixo do Q20 → "alto"
     ena_q_baixo: 0.20        # ENA abaixo do Q20 por 2 semanas seguidas → "alto"
     janelas_consecutivas_ena: 2
+
+    # Regras duras (proxies EPE/MME/ONS) — aplicadas após quantis/ajustes
+    usar_regras_duras: true
+    # Reserva Operativa (proxy de PNS): razão de margem de reserva < 5% da demanda semanal → "alto"
+    reserva_operativa_frac: 0.05
+    # ENS (energia não suprida) semanal (proxy de CVaR_1% no limite): ENS/demanda ≥ 5% → "alto"
+    ens_ratio_thr: 0.05
+    # LOLP anual (proxy em janela móvel de 52 semanas): frequência > 5% → "alto"
+    lolp_thr: 0.05
 
 aggregation:
   freq: "W"                  # semanal
