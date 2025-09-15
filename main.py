@@ -61,14 +61,28 @@ def run_data(
             default_since = (cfg.get("download", {}) or {}).get("since")
             since = since or default_since
         except Exception:
-            pass
+            cfg = None
+
+    # parâmetros de região (YAML opcional)
+    regions = (cfg.get("regions") if cfg else {}) or {}
+    subm_eff = submercado or regions.get("submercado") or "SE/CO"
+    carga_area = regions.get("carga_area")
 
     res = fetch_all(raw, since=since, overwrite=overwrite)
     for k, p in res.items():
         print(f"   - {k}: {p if p else 'não baixado'}")
 
+    # (Re)baixa carga com a área configurada, se fornecida
+    if carga_area:
+        try:
+            from src.fetch_ons import fetch_carga_api
+            print(f"[data] Baixando Carga Verificada para área: {carga_area}")
+            fetch_carga_api(raw, since=since, area=str(carga_area), overwrite=overwrite, verbose=True)
+        except Exception as e:
+            print(f"[data] Aviso: fetch de carga com area={carga_area} falhou: {e}")
+
     # 2) Rodar ETL -> diários padronizados
-    print(f"[data] Rodando ETL ONS -> diários (submercado={submercado})")
+    print(f"[data] Rodando ETL ONS -> diários (submercado={subm_eff})")
     paths = {
         "balanco": raw / "ons_balanco_subsistema_horario.csv",
         "intercambio": raw / "ons_intercambios_entre_subsistemas_horario.csv",
@@ -79,19 +93,20 @@ def run_data(
         "corte_fv": raw / "ons_constrained_off_fv_mensal.csv",
     }
 
-    etl_ons.etl_balanco_subsistema_horario(paths["balanco"], raw, submercado)
-    etl_ons.etl_intercambio_horario(paths["intercambio"], raw, submercado)
-    etl_ons.etl_carga(paths["carga"], raw, submercado)
-    etl_ons.etl_ena_diaria(paths["ena"], raw, submercado)
-    etl_ons.etl_ear_diaria(paths["ear"], raw, submercado)
-    etl_ons.etl_constrained_off_mensal(paths["corte_eolica"], raw, "eolica", submercado)
-    etl_ons.etl_constrained_off_mensal(paths["corte_fv"], raw, "fv", submercado)
+    etl_ons.etl_balanco_subsistema_horario(paths["balanco"], raw, subm_eff)
+    etl_ons.etl_intercambio_horario(paths["intercambio"], raw, subm_eff)
+    etl_ons.etl_carga(paths["carga"], raw, subm_eff)
+    etl_ons.etl_ena_diaria(paths["ena"], raw, subm_eff)
+    etl_ons.etl_ear_diaria(paths["ear"], raw, subm_eff)
+    etl_ons.etl_constrained_off_mensal(paths["corte_eolica"], raw, "eolica", subm_eff)
+    etl_ons.etl_constrained_off_mensal(paths["corte_fv"], raw, "fv", subm_eff)
 
     if fetch_nasa:
         try:
             inicio = _since_to_date(since)
+            pontos = regions.get("meteo_points") if regions else None
             out = fetch_meteorologia(
-                raw, provider="nasa_power", overwrite=overwrite, inicio=inicio
+                raw, provider="nasa_power", overwrite=overwrite, inicio=inicio, pontos=pontos
             )
             print(f"[data] Meteorologia: {out if out else 'não baixado'}")
         except Exception as e:

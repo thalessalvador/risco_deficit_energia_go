@@ -55,7 +55,18 @@ def weekly_aggregate(df: pd.DataFrame, hows: List[str]) -> pd.DataFrame:
       pandas.DataFrame: Colunas agregadas com sufixo `_w` e nome da função.
     """
     funcs = [AGG_FUNCS[h] for h in hows]
-    w = df.resample("W").agg(funcs)
+    # Evita erros de horário de verão (DST) ao resamplear: usa UTC se índice for tz‑aware
+    dfr = df
+    try:
+        if isinstance(df.index, pd.DatetimeIndex) and df.index.tz is not None:
+            dfr = df.tz_convert("UTC")
+    except Exception:
+        # fallback conservador: remove tz
+        try:
+            dfr = df.tz_convert("UTC").tz_localize(None)
+        except Exception:
+            dfr = df
+    w = dfr.resample("W").agg(funcs)
     cols = []
     for col, func in w.columns.to_flat_index():
         agg = func if isinstance(func, str) else AGG_NAME.get(func, "agg")

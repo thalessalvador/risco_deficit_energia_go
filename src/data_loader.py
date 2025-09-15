@@ -41,6 +41,12 @@ def ensure_daily(df: pd.DataFrame) -> pd.DataFrame:
     """
     if not isinstance(df.index, pd.DatetimeIndex):
         raise ValueError("Índice temporal inválido")
+    # Converter para UTC se índice tiver timezone para evitar problemas de DST
+    try:
+        if isinstance(df.index, pd.DatetimeIndex) and df.index.tz is not None:
+            df = df.tz_convert("UTC")
+    except Exception:
+        pass
     if (df.index.freq is None) or (df.index.freq != "D"):
         df = df.resample("D").mean()
     return df.ffill(limit=7)

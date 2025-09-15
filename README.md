@@ -182,6 +182,13 @@ df.to_csv("data/raw/clima_go_diario.csv", index=False)
 - Se vier horário/semi‑horário, agregue para diário (soma para energia; média para índices) ou deixe os scripts reamostrarem.
 - O ETL é tolerante a variações comuns de nomes; para layouts muito diferentes, ajustar `src/etl_ons.py`.
 
+## Parâmetros de região (config.yaml)
+- `regions.submercado`: submercado alvo para o ETL (ex.: "SE/CO", "NE", "N", "S"). A CLI `--submercado` tem precedência.
+- `regions.carga_area`: código da área para a API de Carga Verificada (ex.: "SECO", "NE", ou códigos específicos como "GO"/"PESE").
+- `regions.meteo_points`: lista de pontos (lat,lon) para agregação da meteorologia (NASA POWER). Ajuste para outra UF/região conforme necessário.
+
+Nota: se `regions.carga_area` for definido, o passo de dados rebaixa `ons_carga.csv` com a área informada antes de rodar o ETL.
+
 ## Instalação
 
 ```bash
