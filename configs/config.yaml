@@ -21,8 +21,8 @@ problem:
     # Esta escolha aproxima a adequação de energia semanal (quando negativa, há déficit)
     coluna_margem: "margem_vs_carga_w"
     # Quantis regulatórios aproximados: 5% (LOLP-alvo) e 20% como zona intermediária
-    q_baixo: 0.05            # <= → "alto" (situações piores que o p5)
-    q_medio: 0.20            # (q_baixo, q_medio] → "medio"; > → "baixo"
+    q_baixo: 0.05            # <= -> "alto" (situações piores que o p5)
+    q_medio: 0.20            # (q_baixo, q_medio] -> "medio"; > -> "baixo"
 
     # Ajuste por cortes (interpretação: superávit/indisponibilidade de escoamento)
     curtail_downgrade:
@@ -34,27 +34,40 @@ problem:
     usar_override_hidro: true
     coluna_ear: "ear_pct_mean_w"
     coluna_ena: "ena_mwmed_mean_w"
-    ear_q_baixo: 0.20        # EAR abaixo do Q20 → "alto"
-    ena_q_baixo: 0.20        # ENA abaixo do Q20 por 2 semanas seguidas → "alto"
+    ear_q_baixo: 0.20        # EAR abaixo do Q20 -> "alto"
+    ena_q_baixo: 0.20        # ENA abaixo do Q20 por 2 semanas seguidas -> "alto"
     janelas_consecutivas_ena: 2
 
     # Regras duras (proxies EPE/MME/ONS) — aplicadas após quantis/ajustes
     usar_regras_duras: true
-    # Reserva Operativa (proxy de PNS): razão de margem de reserva < 5% da demanda semanal → "alto"
+    # Reserva Operativa (proxy de PNS): razão de margem de reserva < 5% da demanda semanal -> "alto"
     reserva_operativa_frac: 0.05
-    # ENS (energia não suprida) semanal (proxy de CVaR_1% no limite): ENS/demanda ≥ 5% → "alto"
+    # ENS (energia não suprida) semanal (proxy de CVaR_1% no limite): ENS/demanda ≥ 5% -> "alto"
     ens_ratio_thr: 0.05
-    # LOLP anual (proxy em janela móvel de 52 semanas): frequência > 5% → "alto"
+    # LOLP anual (proxy em janela móvel de 52 semanas): frequência > 5% -> "alto"
     lolp_thr: 0.05
 
 aggregation:
   freq: "W"                  # semanal
   features:
-    # agregações de diário→semanal
+    # agregações de diário->semanal
     daily_aggs: ["mean", "sum", "max", "min", "std", "p95", "p05"]
     # lags e janelas móveis semanais
     lags_weeks: [1, 2, 4]
     rolling_weeks: [2, 4]
+    # Filtro de qualidade por cobertura (proporção de valores NÃO nulos):
+    # Mantém apenas colunas diárias cuja cobertura seja >= min_nonnull_ratio.
+    # Exemplos:
+    #  - 0.50 (padrão): descarta colunas com cobertura < 50% (ou seja, >50% faltantes).
+    #  - 0.60: descarta colunas com cobertura < 60% (permite apenas colunas com >=60% preenchido).
+    #  - 0.80: exige alta cobertura; descarta colunas com <80% preenchido.
+    #  - 0.0: desativa o filtro (não descarta por cobertura).
+    #  - 1.0: mantém somente colunas totalmente preenchidas (100%).
+    min_nonnull_ratio: 0.60
+    # Filtro semanal (após agregações e derivadas, antes de lags/rolagens):
+    # Remove features semanais cuja cobertura (não nulos) seja < limiar.
+    # Exemplos: 0.60 (recomendado para reduzir dimensionalidade), 0.0 (desativa), 1.0 (somente 100% preenchidas).
+    min_nonnull_ratio_weekly: 0.60
 
 modeling:
   holdout_fraction: 0.2     # fração do período mais recente reservado para teste final (hold-out)

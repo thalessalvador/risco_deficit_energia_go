@@ -16,7 +16,7 @@ from joblib import dump
 from src.data_loader import load_all_sources
 from src.feature_engineer import build_features_weekly
 
-# Mapeamento estável de rótulos (string → inteiro)
+# Mapeamento estável de rótulos (string -> inteiro)
 LABEL_MAP = {"baixo": 0, "medio": 1, "alto": 2}
 INV_LABEL_MAP = {v: k for k, v in LABEL_MAP.items()}
 
@@ -52,7 +52,9 @@ Funções auxiliares para tuning simples via GridSearchCV.
 """
 
 
-def rotular_semana(df: pd.DataFrame, cfg, ref_df: pd.DataFrame | None = None) -> pd.Series:
+def rotular_semana(
+    df: pd.DataFrame, cfg, ref_df: pd.DataFrame | None = None
+) -> pd.Series:
     """Gera rótulos semanais (baixo|medio|alto) com base na margem e ajustes.
 
     - Usa quantis de `coluna_margem` definidos em `cfg`.
@@ -159,6 +161,7 @@ def rotular_semana(df: pd.DataFrame, cfg, ref_df: pd.DataFrame | None = None) ->
 
     return y
 
+
 def compute_label_thresholds(cfg, ref_df: pd.DataFrame) -> dict:
     """Calcula thresholds fixos de rotulagem a partir do conjunto de treino/validação.
 
@@ -185,11 +188,19 @@ def compute_label_thresholds(cfg, ref_df: pd.DataFrame) -> dict:
 
     ear_col = r.get("coluna_ear")
     ear_q = float(r.get("ear_q_baixo", 0.2)) if ear_col else None
-    ear_thr = float(ref_df[ear_col].quantile(ear_q)) if ear_col and ear_col in ref_df.columns else None
+    ear_thr = (
+        float(ref_df[ear_col].quantile(ear_q))
+        if ear_col and ear_col in ref_df.columns
+        else None
+    )
 
     ena_col = r.get("coluna_ena")
     ena_q = float(r.get("ena_q_baixo", 0.2)) if ena_col else None
-    ena_thr = float(ref_df[ena_col].quantile(ena_q)) if ena_col and ena_col in ref_df.columns else None
+    ena_thr = (
+        float(ref_df[ena_col].quantile(ena_q))
+        if ena_col and ena_col in ref_df.columns
+        else None
+    )
     k = int(r.get("janelas_consecutivas_ena", 2))
 
     cd = r.get("curtail_downgrade", {}) or {}
@@ -232,6 +243,7 @@ def compute_label_thresholds(cfg, ref_df: pd.DataFrame) -> dict:
         "lolp_thr": float(r.get("lolp_thr", 0.05)),
     }
     return thresholds
+
 
 def rotular_semana_com_thresholds(df: pd.DataFrame, cfg, thresholds: dict) -> pd.Series:
     """Rotula com thresholds fixos (sem recalcular quantis).
@@ -312,6 +324,7 @@ def rotular_semana_com_thresholds(df: pd.DataFrame, cfg, thresholds: dict) -> pd
 
     return y
 
+
 def make_model(model_cfg):
     """Cria o estimador conforme o bloco `model_cfg` (logreg ou xgboost).
 
@@ -334,10 +347,12 @@ def make_model(model_cfg):
     elif model_cfg["type"] == "xgboost":
         from xgboost import XGBClassifier
 
-        return Pipeline([
-            ("imputer", SimpleImputer(strategy="median")),
-            ("clf", XGBClassifier(**model_cfg["params"]))
-        ])
+        return Pipeline(
+            [
+                ("imputer", SimpleImputer(strategy="median")),
+                ("clf", XGBClassifier(**model_cfg["params"])),
+            ]
+        )
     else:
         raise ValueError(f"Modelo não suportado: {model_cfg['type']}")
 
@@ -377,7 +392,9 @@ def main(config_path="configs/config.yaml"):
     train_val_df.to_parquet(feats_dir / "features_trainval.parquet")
     if len(test_df) > 0:
         test_df.to_parquet(feats_dir / "features_test_holdout.parquet")
-    print(f"[train] Hold-out saved: train_val={len(train_val_df)} weeks, test={len(test_df)} weeks in {feats_dir}.")
+    print(
+        f"[train] Hold-out saved: train_val={len(train_val_df)} weeks, test={len(test_df)} weeks in {feats_dir}."
+    )
 
     # thresholds fixos a partir do conjunto de treino/validação
     thresholds = compute_label_thresholds(cfg, train_val_df)
@@ -394,7 +411,9 @@ def main(config_path="configs/config.yaml"):
         tune_cfg = mcfg.get("tuning", {}) or {}
         use_tuning = bool(tune_cfg.get("use", False))
         inner_splits = int(tune_cfg.get("cv_splits", 3))
-        scoring = tune_cfg.get("scoring", ["f1_macro", "balanced_accuracy"]) or "f1_macro"
+        scoring = (
+            tune_cfg.get("scoring", ["f1_macro", "balanced_accuracy"]) or "f1_macro"
+        )
         refit_metric = tune_cfg.get("refit", "f1_macro")
         # grid único (sem duas fases)
         param_grid = _prefix_param_grid(tune_cfg.get("param_grid", {}))
@@ -471,7 +490,10 @@ def main(config_path="configs/config.yaml"):
             final_model = gs.best_estimator_
             # opcional: salvar melhores params
             try:
-                best_params_path = Path(cfg["paths"]["reports_dir"]) / f"tuning_{mcfg['name']}_best_params.json"
+                best_params_path = (
+                    Path(cfg["paths"]["reports_dir"])
+                    / f"tuning_{mcfg['name']}_best_params.json"
+                )
                 best_params_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(best_params_path, "w", encoding="utf-8") as jf:
                     json.dump(gs.best_params_, jf, ensure_ascii=False, indent=2)
@@ -491,7 +513,9 @@ def main(config_path="configs/config.yaml"):
 
         # grava thresholds também em JSON (um por modelo)
         try:
-            with open(out_dir / f"label_thresholds_{mcfg['name']}.json", "w", encoding="utf-8") as jf:
+            with open(
+                out_dir / f"label_thresholds_{mcfg['name']}.json", "w", encoding="utf-8"
+            ) as jf:
                 json.dump(thresholds, jf, ensure_ascii=False, indent=2)
         except Exception:
             pass

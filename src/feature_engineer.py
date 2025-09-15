@@ -1,5 +1,6 @@
 # src/feature_engineer.py
 from __future__ import annotations
+import warnings
 import numpy as np
 import pandas as pd
 from typing import Dict, List
@@ -87,14 +88,16 @@ def add_lags_rolls(
             new_cols[f"{col}_r{R}w_mean"] = roll.mean()
             new_cols[f"{col}_r{R}w_std"] = roll.std()
     if new_cols:
-        return pd.concat([dfw, pd.DataFrame(new_cols, index=dfw.index)], axis=1, copy=False)
+        return pd.concat(
+            [dfw, pd.DataFrame(new_cols, index=dfw.index)], axis=1, copy=False
+        )
     return dfw.copy()
 
 
 def build_features_weekly(data: Dict[str, pd.DataFrame], cfg: Dict) -> pd.DataFrame:
     """Constrói a feature store semanal a partir dos insumos diários.
 
-    - Agrega D→W (múltiplas funções),
+    - Agrega D->W (múltiplas funções),
     - Deriva métricas (margem, saldo, razão de corte),
     - Cria lags e janelas.
 
@@ -106,45 +109,76 @@ def build_features_weekly(data: Dict[str, pd.DataFrame], cfg: Dict) -> pd.DataFr
       pandas.DataFrame: Features semanais indexadas por semana.
     """
     hows = cfg["aggregation"]["features"]["daily_aggs"]
+    min_ratio = float(cfg["aggregation"]["features"].get("min_nonnull_ratio", 0.5))
+    weekly_min_ratio = cfg["aggregation"]["features"].get(
+        "min_nonnull_ratio_weekly", None
+    )
+    try:
+        weekly_min_ratio = (
+            float(weekly_min_ratio) if weekly_min_ratio is not None else None
+        )
+    except Exception:
+        weekly_min_ratio = None
     lags = cfg["aggregation"]["features"]["lags_weeks"]
     rolls = cfg["aggregation"]["features"]["rolling_weeks"]
 
     bases = []
 
+    def _filter_present_and_dense(df: pd.DataFrame, cols: List[str]) -> List[str]:
+        cols = [c for c in cols if c in df.columns]
+        if not cols:
+            return []
+        ratios = df[cols].notna().mean()
+        keep = [c for c in cols if float(ratios.get(c, 0.0)) >= min_ratio]
+        dropped = sorted(set(cols) - set(keep))
+        if dropped:
+            warnings.warn(
+                f"Removendo colunas com baixa cobertura (<{min_ratio:.0%}) em feature engineering: {dropped}"
+            )
+        return keep
+
     if "carga" in data:
-        bases.append(weekly_aggregate(data["carga"][["carga_mwh"]], hows))
+        sel = _filter_present_and_dense(data["carga"], ["carga_mwh"])
+        if sel:
+            bases.append(weekly_aggregate(data["carga"][sel], hows))
 
     if "ger_fontes" in data:
-        bases.append(
-            weekly_aggregate(
-                data["ger_fontes"][
-                    [
-                        "ger_hidreletrica_mwh",
-                        "ger_eolica_mwh",
-                        "ger_fv_mwh",
-                        "ger_termica_mwh",
-                    ]
-                ],
-                hows,
-            )
+        sel = _filter_present_and_dense(
+            data["ger_fontes"],
+            [
+                "ger_hidreletrica_mwh",
+                "ger_eolica_mwh",
+                "ger_fv_mwh",
+                "ger_termica_mwh",
+            ],
         )
+        if sel:
+            bases.append(weekly_aggregate(data["ger_fontes"][sel], hows))
 
     if "intercambio" in data:
-        bases.append(
-            weekly_aggregate(data["intercambio"][["import_mwh", "export_mwh"]], hows)
+        sel = _filter_present_and_dense(
+            data["intercambio"], ["import_mwh", "export_mwh"]
         )
+        if sel:
+            bases.append(weekly_aggregate(data["intercambio"][sel], hows))
 
     if "ena" in data:
-        bases.append(weekly_aggregate(data["ena"][["ena_mwmed"]], hows))
+        sel = _filter_present_and_dense(data["ena"], ["ena_mwmed"])
+        if sel:
+            bases.append(weekly_aggregate(data["ena"][sel], hows))
     if "ear" in data:
-        bases.append(weekly_aggregate(data["ear"][["ear_pct"]], hows))
+        sel = _filter_present_and_dense(data["ear"], ["ear_pct"])
+        if sel:
+            bases.append(weekly_aggregate(data["ear"][sel], hows))
 
     if "cortes_eolica" in data:
-        bases.append(
-            weekly_aggregate(data["cortes_eolica"][["corte_eolica_mwh"]], hows)
-        )
+        sel = _filter_present_and_dense(data["cortes_eolica"], ["corte_eolica_mwh"])
+        if sel:
+            bases.append(weekly_aggregate(data["cortes_eolica"][sel], hows))
     if "cortes_fv" in data:
-        bases.append(weekly_aggregate(data["cortes_fv"][["corte_fv_mwh"]], hows))
+        sel = _filter_present_and_dense(data["cortes_fv"], ["corte_fv_mwh"])
+        if sel:
+            bases.append(weekly_aggregate(data["cortes_fv"][sel], hows))
 
     if "clima" in data:
         clima = data["clima"].copy()
@@ -155,18 +189,16 @@ def build_features_weekly(data: Dict[str, pd.DataFrame], cfg: Dict) -> pd.DataFr
             clima["precip_30d_mm"] = (
                 clima["precipitacao_mm"].rolling(30, min_periods=1).sum()
             )
-        sel = [
-            c
-            for c in [
-                "ghi",
-                "temp2m_c",
-                "precipitacao_mm",
-                "precip_14d_mm",
-                "precip_30d_mm",
-            ]
-            if c in clima.columns
+        cand = [
+            "ghi",
+            "temp2m_c",
+            "precipitacao_mm",
+            "precip_14d_mm",
+            "precip_30d_mm",
         ]
-        bases.append(weekly_aggregate(clima[sel], hows))
+        sel = _filter_present_and_dense(clima, cand)
+        if sel:
+            bases.append(weekly_aggregate(clima[sel], hows))
 
     Xw = pd.concat(bases, axis=1).sort_index()
     Xw = Xw.loc[~Xw.index.duplicated(keep="last")]
@@ -214,7 +246,9 @@ def build_features_weekly(data: Dict[str, pd.DataFrame], cfg: Dict) -> pd.DataFr
     # - razão de margem de reserva (≈ proxy para PNS/Reserva Operativa)
     # - ENS semanal aproximada (energia não suprida) e sua razão vs. demanda semanal
     # - LOLP empírico (52 semanas) como frequência de semanas com margem negativa
-    carga_sum_cols = [c for c in Xw.columns if c.startswith("carga_mwh_") and c.endswith("_sum_w")]
+    carga_sum_cols = [
+        c for c in Xw.columns if c.startswith("carga_mwh_") and c.endswith("_sum_w")
+    ]
     if "margem_suprimento_w" in Xw.columns and carga_sum_cols:
         carga_sum_col = carga_sum_cols[0]
         # margem vs. carga (energia): suprimento - demanda
@@ -226,7 +260,9 @@ def build_features_weekly(data: Dict[str, pd.DataFrame], cfg: Dict) -> pd.DataFr
         Xw["ens_week_mwh"] = (-Xw["margem_vs_carga_w"]).clip(lower=0)
         Xw["ens_week_ratio"] = Xw["ens_week_mwh"] / denom
         # LOLP empírico (freq. de semanas com déficit em janela móvel de 52 semanas)
-        Xw["lolp_52w"] = (Xw["margem_vs_carga_w"] < 0).rolling(52, min_periods=12).mean()
+        Xw["lolp_52w"] = (
+            (Xw["margem_vs_carga_w"] < 0).rolling(52, min_periods=12).mean()
+        )
 
     # total de cortes renováveis e razão vs potencial renovável
     corte_cols = [
@@ -249,6 +285,18 @@ def build_features_weekly(data: Dict[str, pd.DataFrame], cfg: Dict) -> pd.DataFr
         Xw["ratio_corte_renovavel_w"] = Xw["corte_renovavel_mwh_sum_w"] / (
             Xw["corte_renovavel_mwh_sum_w"] + Xw["ger_renovavel_mwh_sum_w"]
         ).replace({0: np.nan})
+
+    # Filtro de cobertura semanal: descarta colunas com baixa proporção de não nulos
+    if weekly_min_ratio is not None:
+        ratios_w = Xw.notna().mean()
+        keep_cols = ratios_w[ratios_w >= weekly_min_ratio].index.tolist()
+        dropped_cols = sorted(set(Xw.columns) - set(keep_cols))
+        if dropped_cols:
+            warnings.warn(
+                f"Removendo features semanais com baixa cobertura (<{weekly_min_ratio:.0%}): {dropped_cols[:20]}"
+                + (" …" if len(dropped_cols) > 20 else "")
+            )
+        Xw = Xw[keep_cols]
 
     Xw = add_lags_rolls(Xw, lags, rolls)
 

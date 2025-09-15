@@ -57,13 +57,13 @@ Uso: É o principal interesse do governo de Goiás (forte potencial solar). Fund
 Tipo: Float
 O que é: Carga total do subsistema, ou seja, a demanda elétrica (MW médios).
 Obs: Não permite valores nulos.
-Uso no projeto: comparar oferta vs demanda → indicador direto de risco de déficit.
+Uso no projeto: comparar oferta vs demanda -> indicador direto de risco de déficit.
 
 ### val_intercambio
 Tipo: Float
 O que é: Intercâmbio líquido de energia do subsistema (MW médios).
-Positivo → importação de energia.
-Negativo → exportação de energia.
+Positivo -> importação de energia.
+Negativo -> exportação de energia.
 Uso: Goiás pode depender de importações (do Nordeste, por exemplo).
 
 
@@ -154,7 +154,7 @@ Integridade: não permite nulo, zero ou negativo.
 Tipo/unidade: Float em MWmês (energia).
 O que é: ENA bruta absoluta do subsistema no dia.
 Integridade: não permite nulo, zero ou negativo.
-Obs: converta MWmês→MWh (multiplique pelas horas do mês da data) quando comparar com cargas/gerações em MWh; 
+Obs: converta MWmês->MWh (multiplique pelas horas do mês da data) quando comparar com cargas/gerações em MWh; 
 
 ### ena_bruta_regiao_percentualmlt
 Tipo/unidade: Float, % MLT (média de longo termo).
@@ -447,9 +447,9 @@ Observações gerais e integridade
 - Periodicidade: diária; série contínua por `data` (YYYY-MM-DD).
 - Timezone: timestamps tratados como datas (sem hora); agregação e joins no fuso America/Sao_Paulo via pipeline.
 - Unidades conforme documentação NASA POWER (comunidade RE, diário):
-  - `ALLSKY_SFC_SW_DWN` → kWh/m²/dia (GHI diário)
-  - `T2M` → °C (temperatura média diária a 2 m)
-  - `PRECTOTCORR` → mm/dia (precipitação total corrigida)
+  - `ALLSKY_SFC_SW_DWN` -> kWh/m²/dia (GHI diário)
+  - `T2M` -> °C (temperatura média diária a 2 m)
+  - `PRECTOTCORR` -> mm/dia (precipitação total corrigida)
 - Valores faltantes: podem ocorrer em dias isolados; o pipeline permite preenchimento curto (até 7 dias) para joins.
 
 Campos no CSV do projeto (após a média espacial)
@@ -475,13 +475,13 @@ Notas: já vem em graus Celsius via API (comunidade RE).
 Tipo/unidade: Float (mm/dia).
 O que é: Precipitação diária total corrigida (PRECTOTCORR).
 Uso no projeto: usada diretamente e como base para acumulados móveis (14 e 30 dias) antes da agregação semanal.
-Notas: acumulados móveis criados no pipeline diário → semanal em `src/feature_engineer.py`.
+Notas: acumulados móveis criados no pipeline diário -> semanal em `src/feature_engineer.py`.
 
 Derivados usados nas features (criados no pipeline)
 - `precip_14d_mm`: soma móvel de 14 dias da precipitação (mm)
 - `precip_30d_mm`: soma móvel de 30 dias (mm)
 
 Boas práticas/atenção
-- Coerência temporal: cruzar com séries do ONS já em frequência diária antes do D→W.
+- Coerência temporal: cruzar com séries do ONS já em frequência diária antes do D->W.
 - Variação espacial: pontos padrão podem ser ajustados se desejar focos regionais; manter número de pontos para comparabilidade.
 - Consistência de unidades: manter nomes/colunas exatamente como no CSV (`ghi`, `temp2m_c`, `precipitacao_mm`).

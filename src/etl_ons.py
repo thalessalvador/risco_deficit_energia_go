@@ -134,7 +134,9 @@ def _read_csv_auto(path: Path) -> pd.DataFrame:
     for enc in encodings:
         for sep in seps:
             try:
-                return pd.read_csv(path, sep=sep, engine="python", encoding=enc, on_bad_lines="skip")
+                return pd.read_csv(
+                    path, sep=sep, engine="python", encoding=enc, on_bad_lines="skip"
+                )
             except Exception as e:
                 last_err = e
                 continue
@@ -149,7 +151,7 @@ def _read_csv_auto(path: Path) -> pd.DataFrame:
 
 
 def _ensure_daily_sum(df: pd.DataFrame) -> pd.DataFrame:
-    """Reamostra para diário somando os valores (ex.: MWmed/h → MWh/dia).
+    """Reamostra para diário somando os valores (ex.: MWmed/h -> MWh/dia).
 
     Args:
       df (pandas.DataFrame): Série horária.
@@ -274,13 +276,29 @@ def etl_intercambio_horario(
     from_cols = [
         c
         for c in df.columns
-        if c in {"de", "from", "origem", "subsistema_de", "id_subsistema_origem", "nom_subsistema_origem"}
+        if c
+        in {
+            "de",
+            "from",
+            "origem",
+            "subsistema_de",
+            "id_subsistema_origem",
+            "nom_subsistema_origem",
+        }
         or ("origem" in c)
     ]
     to_cols = [
         c
         for c in df.columns
-        if c in {"para", "to", "destino", "subsistema_para", "id_subsistema_destino", "nom_subsistema_destino"}
+        if c
+        in {
+            "para",
+            "to",
+            "destino",
+            "subsistema_para",
+            "id_subsistema_destino",
+            "nom_subsistema_destino",
+        }
         or ("destino" in c)
     ]
     # detectar coluna de valor: contém 'mwmed' ou 'valor' ou 'intercambio'
@@ -491,7 +509,11 @@ def etl_constrained_off_mensal(
     df = _normalize_columns(df)
 
     # filtra submercado se disponível
-    sub_cols = [c for c in df.columns if c in {"submercado", "subsistema", "id_subsistema", "nom_subsistema"}]
+    sub_cols = [
+        c
+        for c in df.columns
+        if c in {"submercado", "subsistema", "id_subsistema", "nom_subsistema"}
+    ]
     if sub_cols:
         sub_col = sub_cols[0]
         df = df.loc[df[sub_col].apply(lambda x: _match_submercado(str(x), submercado))]
@@ -526,7 +548,7 @@ def etl_constrained_off_mensal(
 
     if vcol is not None:
         dfd = df[["data", vcol]].copy()
-        # garante numérico; valores não numéricos viram NaN → tratados como 0 na explosão
+        # garante numérico; valores não numéricos viram NaN -> tratados como 0 na explosão
         dfd[vcol] = pd.to_numeric(dfd[vcol], errors="coerce")
         daily = _explode_month_to_daily(dfd, vcol, date_col="data")
         daily = daily.rename(columns={vcol: f"corte_{fonte}_mwh"})
@@ -534,7 +556,9 @@ def etl_constrained_off_mensal(
         # 2) Caso não exista MWh explícito, calcula a partir de estimada - verificada (MWmed)
         if {"val_geracaoestimada", "val_geracaoverificada"} <= set(df.columns):
             tmp = df[["data", "val_geracaoestimada", "val_geracaoverificada"]].copy()
-            tmp["diff_mwmed"] = (tmp["val_geracaoestimada"] - tmp["val_geracaoverificada"]).clip(lower=0)
+            tmp["diff_mwmed"] = (
+                tmp["val_geracaoestimada"] - tmp["val_geracaoverificada"]
+            ).clip(lower=0)
             # agrega por mês e converte para MWh (24 * dias_do_mes)
             g = tmp.groupby(tmp["data"].dt.to_period("M"))[["diff_mwmed"]].sum()
             g.index = g.index.to_timestamp(how="start")
@@ -556,11 +580,11 @@ def etl_constrained_off_mensal(
 def etl_constrained_off_mensal(
     path: Path, out_dir: Path, fonte: str, submercado: str
 ) -> Optional[Path]:
-    """(Override) Constrained-off (eólica/FV) → série diária (MWh) a partir de intradiário ou mensal.
+    """(Override) Constrained-off (eólica/FV) -> série diária (MWh) a partir de intradiário ou mensal.
 
     Suporta:
-      - Arquivos mensais agregados (MWh) → explode uniformemente por dia do mês.
-      - Séries intra-diárias (ex.: 30 min) com referência/geração → integra energia não gerada.
+      - Arquivos mensais agregados (MWh) -> explode uniformemente por dia do mês.
+      - Séries intra-diárias (ex.: 30 min) com referência/geração -> integra energia não gerada.
     """
     if not path.exists():
         return None
@@ -568,7 +592,11 @@ def etl_constrained_off_mensal(
     df = _normalize_columns(df)
 
     # filtra submercado se disponível
-    sub_cols = [c for c in df.columns if c in {"submercado", "subsistema", "id_subsistema", "nom_subsistema"}]
+    sub_cols = [
+        c
+        for c in df.columns
+        if c in {"submercado", "subsistema", "id_subsistema", "nom_subsistema"}
+    ]
     if sub_cols:
         sub_col = sub_cols[0]
         df = df.loc[df[sub_col].apply(lambda x: _match_submercado(str(x), submercado))]
@@ -584,7 +612,9 @@ def etl_constrained_off_mensal(
         elif "competencia" in df.columns:
             df = df.rename(columns={"competencia": "data"})
         elif {"ano", "mes"} <= original_cols:
-            df["data"] = pd.to_datetime(dict(year=df["ano"].astype(int), month=df["mes"].astype(int), day=1))
+            df["data"] = pd.to_datetime(
+                dict(year=df["ano"].astype(int), month=df["mes"].astype(int), day=1)
+            )
         else:
             warnings.warn("Coluna de data não encontrada nos cortes; pulando.")
             return None
@@ -593,9 +623,15 @@ def etl_constrained_off_mensal(
     df = df.dropna(subset=["data"]).sort_values("data")
 
     # Heurística de intra-diário: presença de colunas de geração e passo médio < 6h
-    has_gen = any(c in df.columns for c in [
-        "val_geracao", "val_geracaolimitada", "val_geracaoreferencia", "val_geracaoreferenciafinal"
-    ])
+    has_gen = any(
+        c in df.columns
+        for c in [
+            "val_geracao",
+            "val_geracaolimitada",
+            "val_geracaoreferencia",
+            "val_geracaoreferenciafinal",
+        ]
+    )
     if len(df) >= 10:
         dt = df["data"].sort_values().diff().dt.total_seconds().dropna()
         med_hours = float(np.median(dt) / 3600.0) if len(dt) else None
@@ -617,15 +653,23 @@ def etl_constrained_off_mensal(
 
         # referência prioritária
         ref_col = None
-        for cand in ["val_geracaoreferenciafinal", "val_geracaoreferencia", "val_disponibilidade"]:
+        for cand in [
+            "val_geracaoreferenciafinal",
+            "val_geracaoreferencia",
+            "val_disponibilidade",
+        ]:
             if cand in df2.columns and pd.api.types.is_numeric_dtype(df2[cand]):
                 ref_col = cand
                 break
         gen_col = "val_geracao" if "val_geracao" in df2.columns else None
-        lim_col = "val_geracaolimitada" if "val_geracaolimitada" in df2.columns else None
+        lim_col = (
+            "val_geracaolimitada" if "val_geracaolimitada" in df2.columns else None
+        )
 
         if ref_col is None or (gen_col is None and lim_col is None):
-            warnings.warn("Cortes (intradiário): sem referência/geração suficientes; pulando.")
+            warnings.warn(
+                "Cortes (intradiário): sem referência/geração suficientes; pulando."
+            )
             return None
 
         if lim_col is not None and pd.api.types.is_numeric_dtype(df2[lim_col]):
@@ -649,7 +693,9 @@ def etl_constrained_off_mensal(
         vcol = None
         for c in df.columns:
             nc = _norm_text(c)
-            if any(k in nc for k in ["mwh", "energia_nao_gerada", "corte", "restricao"]):
+            if any(
+                k in nc for k in ["mwh", "energia_nao_gerada", "corte", "restricao"]
+            ):
                 if pd.api.types.is_numeric_dtype(df[c]):
                     vcol = c
                     break
@@ -663,7 +709,9 @@ def etl_constrained_off_mensal(
             tmp = df[["data", "val_geracaoestimada", "val_geracaoverificada"]].copy()
             for c in ["val_geracaoestimada", "val_geracaoverificada"]:
                 tmp[c] = pd.to_numeric(tmp[c], errors="coerce")
-            tmp["diff_mwmed"] = (tmp["val_geracaoestimada"] - tmp["val_geracaoverificada"]).clip(lower=0)
+            tmp["diff_mwmed"] = (
+                tmp["val_geracaoestimada"] - tmp["val_geracaoverificada"]
+            ).clip(lower=0)
             g = tmp.groupby(tmp["data"].dt.to_period("M"))[["diff_mwmed"]].sum()
             g.index = g.index.to_timestamp(how="start")
             days = g.index.to_series().apply(lambda d: (d + pd.offsets.MonthEnd(0)).day)
@@ -671,12 +719,15 @@ def etl_constrained_off_mensal(
             dfd = pd.DataFrame({"data": mwh.index, f"corte_{fonte}_mwh": mwh.values})
             daily = _explode_month_to_daily(dfd, f"corte_{fonte}_mwh", date_col="data")
         else:
-            warnings.warn("Cortes (mensal): sem coluna de MWh e sem pares estimada/verificada; pulando.")
+            warnings.warn(
+                "Cortes (mensal): sem coluna de MWh e sem pares estimada/verificada; pulando."
+            )
             return None
 
     out = out_dir / f"ons_cortes_{fonte}_diario.csv"
     daily.to_csv(out, index=False)
     return out
+
 
 def etl_carga(input_path: Path, out_dir: Path, submercado: str) -> Optional[Path]:
     """Padroniza carga para diário com colunas `data` e `carga_mwh`.
@@ -698,7 +749,11 @@ def etl_carga(input_path: Path, out_dir: Path, submercado: str) -> Optional[Path
     df = _normalize_columns(df)
 
     # filtra submercado se existir
-    sub_cols = [c for c in df.columns if c in {"submercado", "subsistema", "id_subsistema", "nom_subsistema"}]
+    sub_cols = [
+        c
+        for c in df.columns
+        if c in {"submercado", "subsistema", "id_subsistema", "nom_subsistema"}
+    ]
     if sub_cols:
         sub_col = sub_cols[0]
         df = df.loc[df[sub_col].apply(lambda x: _match_submercado(str(x), submercado))]
@@ -710,7 +765,9 @@ def etl_carga(input_path: Path, out_dir: Path, submercado: str) -> Optional[Path
     val_col = None
     for c in df.columns:
         nc = _norm_text(c)
-        if ("cargaverificada" in nc or "carga" in nc or "demanda" in nc) and ("mwmed" in nc or "mw" in nc or "valor" in nc):
+        if ("cargaverificada" in nc or "carga" in nc or "demanda" in nc) and (
+            "mwmed" in nc or "mw" in nc or "valor" in nc
+        ):
             # aceita apenas numéricas
             if pd.api.types.is_numeric_dtype(df[c]):
                 val_col = c
@@ -732,7 +789,9 @@ def etl_carga(input_path: Path, out_dir: Path, submercado: str) -> Optional[Path
         df = df.rename(columns={"din_instante": "data"})
         is_hourly = True
     else:
-        has_hora = any(c in df.columns for c in ["hora", "hr", "h"]) or any("hora" in c for c in df.columns)
+        has_hora = any(c in df.columns for c in ["hora", "hr", "h"]) or any(
+            "hora" in c for c in df.columns
+        )
         if has_hora:
             is_hourly = True
 
@@ -762,7 +821,9 @@ esperados pelo pipeline. Meteorologia (NASA ou outros provedores) vive em `src/m
 
 def main():
     """CLI do ETL ONS: converte brutos em diários padronizados (CSV)."""
-    ap = argparse.ArgumentParser(description="ETL ONS → CSVs diários esperados pelo pipeline.")
+    ap = argparse.ArgumentParser(
+        description="ETL ONS -> CSVs diários esperados pelo pipeline."
+    )
     ap.add_argument(
         "--raw-dir", default="data/raw", help="Diretório com arquivos brutos baixados."
     )

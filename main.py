@@ -25,14 +25,22 @@ def _since_to_date(since: Optional[str]) -> Optional[str]:
             y = int(parts[0])
             return f"{y:04d}-01-01"
         elif len(parts) >= 2:
-            y = int(parts[0]); m = int(parts[1])
+            y = int(parts[0])
+            m = int(parts[1])
             return f"{y:04d}-{m:02d}-01"
     except Exception:
         return None
     return None
 
 
-def run_data(raw_dir: str, submercado: str, fetch_nasa: bool = False, overwrite: bool = False, since: Optional[str] = None, config_path: Optional[str] = None) -> None:
+def run_data(
+    raw_dir: str,
+    submercado: str,
+    fetch_nasa: bool = False,
+    overwrite: bool = False,
+    since: Optional[str] = None,
+    config_path: Optional[str] = None,
+) -> None:
     """Executa download (CKAN), ETL do ONS e, opcionalmente, meteorologia.
 
     Args:
@@ -59,8 +67,8 @@ def run_data(raw_dir: str, submercado: str, fetch_nasa: bool = False, overwrite:
     for k, p in res.items():
         print(f"   - {k}: {p if p else 'não baixado'}")
 
-    # 2) Rodar ETL → diários padronizados
-    print(f"[data] Rodando ETL ONS → diários (submercado={submercado})")
+    # 2) Rodar ETL -> diários padronizados
+    print(f"[data] Rodando ETL ONS -> diários (submercado={submercado})")
     paths = {
         "balanco": raw / "ons_balanco_subsistema_horario.csv",
         "intercambio": raw / "ons_intercambios_entre_subsistemas_horario.csv",
@@ -82,7 +90,9 @@ def run_data(raw_dir: str, submercado: str, fetch_nasa: bool = False, overwrite:
     if fetch_nasa:
         try:
             inicio = _since_to_date(since)
-            out = fetch_meteorologia(raw, provider="nasa_power", overwrite=overwrite, inicio=inicio)
+            out = fetch_meteorologia(
+                raw, provider="nasa_power", overwrite=overwrite, inicio=inicio
+            )
             print(f"[data] Meteorologia: {out if out else 'não baixado'}")
         except Exception as e:
             print(f"[data] Meteorologia falhou: {e}")
@@ -121,23 +131,55 @@ def run_eval(config_path: str, model_name: str) -> None:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     """Parseia argumentos da CLI unificada do projeto."""
-    p = argparse.ArgumentParser(description="CLI unificada do projeto (dados → features → treino → avaliação)")
+    p = argparse.ArgumentParser(
+        description="CLI unificada do projeto (dados -> features -> treino -> avaliação)"
+    )
     # Suporta tanto positional action quanto --action
-    p.add_argument("action", nargs="?", choices=["data", "features", "train", "eval", "all"], help="Ação a executar")
-    p.add_argument("--action", dest="action_opt", choices=["data", "features", "train", "eval", "all"], help="Ação a executar")
+    p.add_argument(
+        "action",
+        nargs="?",
+        choices=["data", "features", "train", "eval", "all"],
+        help="Ação a executar",
+    )
+    p.add_argument(
+        "--action",
+        dest="action_opt",
+        choices=["data", "features", "train", "eval", "all"],
+        help="Ação a executar",
+    )
 
-    p.add_argument("--config", default="configs/config.yaml", help="Caminho para o YAML de configuração")
+    p.add_argument(
+        "--config",
+        default="configs/config.yaml",
+        help="Caminho para o YAML de configuração",
+    )
 
     # Opções de dados/ETL
     p.add_argument("--raw-dir", default="data/raw", help="Diretório de dados brutos")
-    p.add_argument("--submercado", default="SE/CO", help="Submercado alvo (ex.: 'SE/CO')")
-    p.add_argument("--since", default=None, help="Baixar dados a partir deste ano/mês (ex.: 2022 ou 2022-01)")
+    p.add_argument(
+        "--submercado", default="SE/CO", help="Submercado alvo (ex.: 'SE/CO')"
+    )
+    p.add_argument(
+        "--since",
+        default=None,
+        help="Baixar dados a partir deste ano/mês (ex.: 2022 ou 2022-01)",
+    )
     # Clima
-    p.add_argument("--incluir-meteorologia", action="store_true", help="Inclui meteorologia (NASA POWER) no passo de dados")
-    p.add_argument("--overwrite", action="store_true", help="Sobrescreve saídas do ETL (inclui NASA)")
+    p.add_argument(
+        "--incluir-meteorologia",
+        action="store_true",
+        help="Inclui meteorologia (NASA POWER) no passo de dados",
+    )
+    p.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Sobrescreve saídas do ETL (inclui NASA)",
+    )
 
     # Opções de avaliação
-    p.add_argument("--model", default="xgb", help="Nome do modelo para avaliação (ex.: xgb)")
+    p.add_argument(
+        "--model", default="xgb", help="Nome do modelo para avaliação (ex.: xgb)"
+    )
 
     args = p.parse_args(argv)
     # Consolida action
@@ -154,7 +196,14 @@ def main(argv: list[str] | None = None) -> None:
     include_met = bool(getattr(args, "incluir_meteorologia", False))
 
     if args.action == "data":
-        run_data(args.raw_dir, args.submercado, fetch_nasa=include_met, overwrite=args.overwrite, since=args.since, config_path=args.config)
+        run_data(
+            args.raw_dir,
+            args.submercado,
+            fetch_nasa=include_met,
+            overwrite=args.overwrite,
+            since=args.since,
+            config_path=args.config,
+        )
     elif args.action == "features":
         run_features(args.config)
     elif args.action == "train":
@@ -162,7 +211,14 @@ def main(argv: list[str] | None = None) -> None:
     elif args.action == "eval":
         run_eval(args.config, args.model)
     elif args.action == "all":
-        run_data(args.raw_dir, args.submercado, fetch_nasa=include_met, overwrite=args.overwrite, since=args.since, config_path=args.config)
+        run_data(
+            args.raw_dir,
+            args.submercado,
+            fetch_nasa=include_met,
+            overwrite=args.overwrite,
+            since=args.since,
+            config_path=args.config,
+        )
         run_features(args.config)
         run_train(args.config)
         run_eval(args.config, args.model)
