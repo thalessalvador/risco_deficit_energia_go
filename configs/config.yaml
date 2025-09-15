@@ -69,6 +69,15 @@ modeling:
         class_weight: "balanced"
         max_iter: 1000
         n_jobs: -1
+      tuning:
+        use: true
+        method: "grid"
+        cv_splits: 3
+        refit: "f1_macro"
+        scoring: ["f1_macro", "balanced_accuracy"]
+        param_grid:
+          C: [0.1, 0.5, 1.0, 2.0, 5.0]
+          solver: ["lbfgs"]
     - name: "xgb"
       type: "xgboost"
       params:
@@ -79,6 +88,18 @@ modeling:
         colsample_bytree: 0.8
         num_class: 3
         eval_metric: "mlogloss"
+      tuning:
+        use: true
+        method: "grid"
+        cv_splits: 3
+        refit: "f1_macro"
+        scoring: ["f1_macro", "balanced_accuracy"]
+        param_grid:
+          n_estimators: [300, 500]
+          learning_rate: [0.03, 0.06]
+          max_depth: [3, 5]
+          subsample: [0.8, 1.0]
+          colsample_bytree: [0.7, 0.9]
 
 output:
   top_k_features: 25

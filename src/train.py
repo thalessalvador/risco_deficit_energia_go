@@ -5,7 +5,7 @@ from pathlib import Path
 import json
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import TimeSeriesSplit
+from sklearn.model_selection import TimeSeriesSplit, GridSearchCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
@@ -32,6 +32,24 @@ def encode_labels(y: pd.Series) -> pd.Series:
         unknown = set(pd.Series(y).iloc[np.where(c.codes < 0)[0]].unique())
         raise ValueError(f"Rótulos desconhecidos encontrados: {unknown}")
     return pd.Series(c.codes, index=y.index, dtype=int)
+
+
+def _prefix_param_grid(grid: dict, prefix: str = "clf__") -> dict:
+    """Adiciona prefixo de etapa do Pipeline (ex.: 'clf__') nas chaves do grid.
+
+    Aceita chaves já prefixadas e retorna um novo dicionário.
+    """
+    if not grid:
+        return {}
+    out = {}
+    for k, v in grid.items():
+        out[k if k.startswith(prefix) else f"{prefix}{k}"] = v
+    return out
+
+
+"""
+Funções auxiliares para tuning simples via GridSearchCV.
+"""
 
 
 def rotular_semana(df: pd.DataFrame, cfg, ref_df: pd.DataFrame | None = None) -> pd.Series:
@@ -372,6 +390,15 @@ def main(config_path="configs/config.yaml"):
     for mcfg in cfg["modeling"]["models"]:
         model = make_model(mcfg)
         f1s, bals = [], []
+        # tuning (opcional) por modelo
+        tune_cfg = mcfg.get("tuning", {}) or {}
+        use_tuning = bool(tune_cfg.get("use", False))
+        inner_splits = int(tune_cfg.get("cv_splits", 3))
+        scoring = tune_cfg.get("scoring", ["f1_macro", "balanced_accuracy"]) or "f1_macro"
+        refit_metric = tune_cfg.get("refit", "f1_macro")
+        # grid único (sem duas fases)
+        param_grid = _prefix_param_grid(tune_cfg.get("param_grid", {}))
+
         for tr_idx, te_idx in tss.split(X):
             Xtr, Xte = X.iloc[tr_idx], X.iloc[te_idx]
             # Rotulagem sem vazamento: thresholds calculados no treino, aplicados em treino e teste
@@ -394,8 +421,23 @@ def main(config_path="configs/config.yaml"):
             ytr_enc = encode_labels(ytr_ok)
             yte_enc = encode_labels(yte_ok)
 
-            model.fit(Xtr_ok, ytr_enc)
-            pred = model.predict(Xte_ok)
+            if use_tuning and param_grid:
+                inner_cv = TimeSeriesSplit(n_splits=inner_splits)
+                gs = GridSearchCV(
+                    estimator=model,
+                    param_grid=param_grid,
+                    scoring=scoring,
+                    refit=refit_metric,
+                    cv=inner_cv,
+                    n_jobs=-1,
+                    error_score=np.nan,
+                )
+                gs.fit(Xtr_ok, ytr_enc)
+                best_est = gs.best_estimator_
+                pred = best_est.predict(Xte_ok)
+            else:
+                model.fit(Xtr_ok, ytr_enc)
+                pred = model.predict(Xte_ok)
             f1s.append(f1_score(yte_enc, pred, average="macro"))
             bals.append(balanced_accuracy_score(yte_enc, pred))
         resultados.append(
@@ -414,13 +456,36 @@ def main(config_path="configs/config.yaml"):
         X_full_ok, y_full_ok = X.loc[idx_ok], y_full.loc[idx_ok]
         # Encoda rótulos no ajuste final
         y_full_enc = encode_labels(y_full_ok)
-        model.fit(X_full_ok, y_full_enc)
+        if use_tuning and param_grid:
+            inner_cv = TimeSeriesSplit(n_splits=inner_splits)
+            gs = GridSearchCV(
+                estimator=model,
+                param_grid=param_grid,
+                scoring=scoring,
+                refit=refit_metric,
+                cv=inner_cv,
+                n_jobs=-1,
+                error_score=np.nan,
+            )
+            gs.fit(X_full_ok, y_full_enc)
+            final_model = gs.best_estimator_
+            # opcional: salvar melhores params
+            try:
+                best_params_path = Path(cfg["paths"]["reports_dir"]) / f"tuning_{mcfg['name']}_best_params.json"
+                best_params_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(best_params_path, "w", encoding="utf-8") as jf:
+                    json.dump(gs.best_params_, jf, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+        else:
+            model.fit(X_full_ok, y_full_enc)
+            final_model = model
 
         # Anexa mapeamentos ao artefato para uso na avaliação/inferência
         try:
-            setattr(model, "label_mapping_", LABEL_MAP)
-            setattr(model, "inv_label_mapping_", INV_LABEL_MAP)
-            setattr(model, "label_thresholds_", thresholds)
+            setattr(final_model, "label_mapping_", LABEL_MAP)
+            setattr(final_model, "inv_label_mapping_", INV_LABEL_MAP)
+            setattr(final_model, "label_thresholds_", thresholds)
         except Exception:
             pass
 
@@ -431,7 +496,7 @@ def main(config_path="configs/config.yaml"):
         except Exception:
             pass
 
-        dump(model, out_dir / f"{mcfg['name']}.joblib")
+        dump(final_model, out_dir / f"{mcfg['name']}.joblib")
 
     rep_dir = Path(cfg["paths"]["reports_dir"])
     rep_dir.mkdir(parents=True, exist_ok=True)
