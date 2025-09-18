@@ -11,6 +11,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import f1_score, balanced_accuracy_score
 from sklearn.linear_model import LogisticRegression
+from src.models.contiguous import ContiguousLabelClassifier
 from joblib import dump
 
 from src.data_loader import load_all_sources
@@ -341,7 +342,7 @@ def make_model(model_cfg):
             [
                 ("imputer", SimpleImputer(strategy="median")),
                 ("scaler", StandardScaler(with_mean=False)),
-                ("clf", LogisticRegression(**model_cfg["params"])),
+                ("clf", ContiguousLabelClassifier(LogisticRegression(**model_cfg["params"]))),
             ]
         )
     elif model_cfg["type"] == "xgboost":
@@ -350,7 +351,7 @@ def make_model(model_cfg):
         return Pipeline(
             [
                 ("imputer", SimpleImputer(strategy="median")),
-                ("clf", XGBClassifier(**model_cfg["params"])),
+                ("clf", ContiguousLabelClassifier(XGBClassifier(**model_cfg["params"]))),
             ]
         )
     else:
@@ -508,6 +509,14 @@ def main(config_path="configs/config.yaml"):
             setattr(final_model, "label_mapping_", LABEL_MAP)
             setattr(final_model, "inv_label_mapping_", INV_LABEL_MAP)
             setattr(final_model, "label_thresholds_", thresholds)
+        except Exception:
+            pass
+
+        try:
+            clf_step = getattr(getattr(final_model, "named_steps", {}), "get", lambda *args, **kwargs: None)("clf")
+            if isinstance(clf_step, ContiguousLabelClassifier):
+                setattr(final_model, "contiguous_inverse_map_", getattr(clf_step, "_inverse_map_", {}))
+                setattr(final_model, "contiguous_forward_map_", getattr(clf_step, "_forward_map_", {}))
         except Exception:
             pass
 
