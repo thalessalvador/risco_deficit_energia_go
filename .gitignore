@@ -44,7 +44,7 @@ logs/
 *.log
 
 # Artefatos do projeto (gerados)
-models/
+/models/
 reports/
 data/processed/
 data/features/
