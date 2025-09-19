@@ -76,9 +76,17 @@ aggregation:
     rolling_weeks: [2, 4]
     # Filtro de qualidade por cobertura (proporção de valores NÃO nulos):
     # Mantém apenas colunas diárias cuja cobertura seja >= min_nonnull_ratio.
-    min_nonnull_ratio: 0.60
+    # Exemplos:
+        #  - 0.50 (padrão): descarta colunas com cobertura < 50% (ou seja, >50% faltantes).
+        #  - 0.60: descarta colunas com cobertura < 60% (permite apenas colunas com >=60% preenchido).
+        #  - 0.80: exige alta cobertura; descarta colunas com <80% preenchido.
+        #  - 0.0: desativa o filtro (não descarta por cobertura).
+        #  - 1.0: mantém somente colunas totalmente preenchidas (100%).
+    min_nonnull_ratio: 0.6
     # Filtro semanal (após agregações e derivadas, antes de lags/rolagens):
-    min_nonnull_ratio_weekly: 0.60
+    # Remove features semanais cuja cobertura (não nulos) seja < limiar.
+    # Exemplos: 0.60 (recomendado para reduzir dimensionalidade), 0.0 (desativa), 1.0 (somente 100% preenchidas).
+    min_nonnull_ratio_weekly: 0.6
 
 modeling:
   holdout_fraction: 0.2     # fração do período mais recente reservado para teste final (hold-out)
