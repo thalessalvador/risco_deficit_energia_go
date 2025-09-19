@@ -35,6 +35,15 @@ def encode_labels(y: pd.Series) -> pd.Series:
     return pd.Series(c.codes, index=y.index, dtype=int)
 
 
+def compute_sample_weights(y: pd.Series) -> np.ndarray:
+    """Calcula pesos inversamente proporcionais à frequência de cada classe."""
+    counts = y.value_counts()
+    n_classes = len(counts)
+    total = len(y)
+    weight_map = {cls: total / (n_classes * cnt) for cls, cnt in counts.items() if cnt > 0}
+    return y.map(weight_map).astype(float).to_numpy()
+
+
 def _prefix_param_grid(grid: dict, prefix: str = "clf__") -> dict:
     """Adiciona prefixo de etapa do Pipeline (ex.: 'clf__') nas chaves do grid.
 
@@ -111,9 +120,8 @@ def rotular_semana(
             if req_no_import and (saldo_import is not None):
                 cond_import = saldo_import.fillna(0) <= 0  # não está importando líquido
             cond = cond_ratio & cond_import
-            # "descer" um nível de risco onde as condições forem verdadeiras
+            # Reduz o nível de risco apenas de alto->medio para manter a zona intermediária prevista na literatura
             y.loc[cond & (y == "alto")] = "medio"
-            y.loc[cond & (y == "medio")] = "baixo"
 
     # Ajuste hidrológico (estiagem)
     if r.get("usar_override_hidro", True):
@@ -149,16 +157,22 @@ def rotular_semana(
         lolp_thr = float(r.get("lolp_thr", 0.05))
 
         rm = df.get("reserve_margin_ratio_w")
-        if rm is not None:
-            y[rm < reserva_frac] = "alto"
+        base_rm = (ref_df if ref_df is not None else df).get("reserve_margin_ratio_w")
+        if rm is not None and base_rm is not None:
+            reserva_threshold = base_rm.quantile(reserva_frac)
+            y[rm < reserva_threshold] = "alto"
 
         ens_ratio = df.get("ens_week_ratio")
-        if ens_ratio is not None:
-            y[ens_ratio >= ens_thr] = "alto"
+        base_ens = (ref_df if ref_df is not None else df).get("ens_week_ratio")
+        if ens_ratio is not None and base_ens is not None:
+            threshold = base_ens.quantile(max(0.0, min(1.0, 1 - ens_thr)))
+            y[ens_ratio >= threshold] = "alto"
 
         lolp = df.get("lolp_52w")
-        if lolp is not None:
-            y[lolp > lolp_thr] = "alto"
+        base_lolp = (ref_df if ref_df is not None else df).get("lolp_52w")
+        if lolp is not None and base_lolp is not None:
+            threshold = base_lolp.quantile(max(0.0, min(1.0, 1 - lolp_thr)))
+            y[lolp > threshold] = "alto"
 
     return y
 
@@ -208,6 +222,18 @@ def compute_label_thresholds(cfg, ref_df: pd.DataFrame) -> dict:
     ratio_thr = float(cd.get("corte_ratio_thr", 0.05))
     req_no_import = bool(cd.get("requer_saldo_importador_nao_positivo", True))
 
+    rm = ref_df.get("reserve_margin_ratio_w")
+    reserva_frac = float(r.get("reserva_operativa_frac", 0.05))
+    reserva_value = float(rm.quantile(reserva_frac)) if rm is not None else None
+
+    ens_series = ref_df.get("ens_week_ratio")
+    ens_frac = float(r.get("ens_ratio_thr", 0.05))
+    ens_value = float(ens_series.quantile(max(0.0, min(1.0, 1 - ens_frac)))) if ens_series is not None else None
+
+    lolp_series = ref_df.get("lolp_52w")
+    lolp_frac = float(r.get("lolp_thr", 0.05))
+    lolp_value = float(lolp_series.quantile(max(0.0, min(1.0, 1 - lolp_frac)))) if lolp_series is not None else None
+
     thresholds = {
         "margem": {
             "col": margem_col,
@@ -240,8 +266,11 @@ def compute_label_thresholds(cfg, ref_df: pd.DataFrame) -> dict:
     thresholds["regulatory_proxies"] = {
         "usar_regras_duras": bool(r.get("usar_regras_duras", True)),
         "reserva_operativa_frac": float(r.get("reserva_operativa_frac", 0.05)),
+        "reserva_operativa_value": reserva_value,
         "ens_ratio_thr": float(r.get("ens_ratio_thr", 0.05)),
+        "ens_ratio_value": ens_value,
         "lolp_thr": float(r.get("lolp_thr", 0.05)),
+        "lolp_value": lolp_value,
     }
     return thresholds
 
@@ -286,8 +315,8 @@ def rotular_semana_com_thresholds(df: pd.DataFrame, cfg, thresholds: dict) -> pd
         if req_no_import and (saldo_import is not None):
             cond_import = saldo_import.fillna(0) <= 0
         cond = cond_ratio & cond_import
+        # Reduz apenas de alto->medio para preservar a classe intermediária
         y.loc[cond & (y == "alto")] = "medio"
-        y.loc[cond & (y == "medio")] = "baixo"
 
     # overrides hidrológicos
     ear_info = thresholds.get("ear", {})
@@ -308,20 +337,28 @@ def rotular_semana_com_thresholds(df: pd.DataFrame, cfg, thresholds: dict) -> pd
     reg = thresholds.get("regulatory_proxies", {})
     if bool(reg.get("usar_regras_duras", True)):
         reserva_frac = float(reg.get("reserva_operativa_frac", 0.05))
+        reserva_value = reg.get("reserva_operativa_value")
         ens_thr = float(reg.get("ens_ratio_thr", 0.05))
         lolp_thr = float(reg.get("lolp_thr", 0.05))
 
         rm = df.get("reserve_margin_ratio_w")
         if rm is not None:
-            y[rm < reserva_frac] = "alto"
+            threshold = reserva_value if reserva_value is not None else rm.quantile(reserva_frac)
+            y[rm < threshold] = "alto"
 
         ens_ratio = df.get("ens_week_ratio")
         if ens_ratio is not None:
-            y[ens_ratio >= ens_thr] = "alto"
+            threshold = reg.get("ens_ratio_value")
+            if threshold is None:
+                threshold = ens_ratio.quantile(max(0.0, min(1.0, 1 - ens_thr)))
+            y[ens_ratio >= threshold] = "alto"
 
         lolp = df.get("lolp_52w")
         if lolp is not None:
-            y[lolp > lolp_thr] = "alto"
+            threshold = reg.get("lolp_value")
+            if threshold is None:
+                threshold = lolp.quantile(max(0.0, min(1.0, 1 - lolp_thr)))
+            y[lolp > threshold] = "alto"
 
     return y
 
@@ -440,6 +477,7 @@ def main(config_path="configs/config.yaml"):
             # Encoda rótulos para inteiros (0=baixo,1=medio,2=alto)
             ytr_enc = encode_labels(ytr_ok)
             yte_enc = encode_labels(yte_ok)
+            sample_weight_tr = compute_sample_weights(ytr_enc)
 
             if use_tuning and param_grid:
                 inner_cv = TimeSeriesSplit(n_splits=inner_splits)
@@ -452,11 +490,11 @@ def main(config_path="configs/config.yaml"):
                     n_jobs=-1,
                     error_score=np.nan,
                 )
-                gs.fit(Xtr_ok, ytr_enc)
+                gs.fit(Xtr_ok, ytr_enc, **{'clf__sample_weight': sample_weight_tr})
                 best_est = gs.best_estimator_
                 pred = best_est.predict(Xte_ok)
             else:
-                model.fit(Xtr_ok, ytr_enc)
+                model.fit(Xtr_ok, ytr_enc, **{'clf__sample_weight': sample_weight_tr})
                 pred = model.predict(Xte_ok)
             f1s.append(f1_score(yte_enc, pred, average="macro"))
             bals.append(balanced_accuracy_score(yte_enc, pred))
@@ -476,6 +514,7 @@ def main(config_path="configs/config.yaml"):
         X_full_ok, y_full_ok = X.loc[idx_ok], y_full.loc[idx_ok]
         # Encoda rótulos no ajuste final
         y_full_enc = encode_labels(y_full_ok)
+        sample_weight_full = compute_sample_weights(y_full_enc)
         if use_tuning and param_grid:
             inner_cv = TimeSeriesSplit(n_splits=inner_splits)
             gs = GridSearchCV(
@@ -487,7 +526,7 @@ def main(config_path="configs/config.yaml"):
                 n_jobs=-1,
                 error_score=np.nan,
             )
-            gs.fit(X_full_ok, y_full_enc)
+            gs.fit(X_full_ok, y_full_enc, **{'clf__sample_weight': sample_weight_full})
             final_model = gs.best_estimator_
             # opcional: salvar melhores params
             try:
@@ -501,7 +540,7 @@ def main(config_path="configs/config.yaml"):
             except Exception:
                 pass
         else:
-            model.fit(X_full_ok, y_full_enc)
+            model.fit(X_full_ok, y_full_enc, **{'clf__sample_weight': sample_weight_full})
             final_model = model
 
         # Anexa mapeamentos ao artefato para uso na avaliação/inferência
@@ -539,3 +578,4 @@ def main(config_path="configs/config.yaml"):
 
 if __name__ == "__main__":
     main()
+

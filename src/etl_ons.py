@@ -762,39 +762,37 @@ def etl_carga(input_path: Path, out_dir: Path, submercado: str) -> Optional[Path
         return None
 
     # detectar valor e data/hora
-    val_col = None
-    for c in df.columns:
-        nc = _norm_text(c)
-        if ("cargaverificada" in nc or "carga" in nc or "demanda" in nc) and (
-            "mwmed" in nc or "mw" in nc or "valor" in nc
-        ):
-            # aceita apenas numéricas
-            if pd.api.types.is_numeric_dtype(df[c]):
-                val_col = c
-                break
+    preferred_val_cols = ["val_cargaglobalsmmg", "val_cargaglobal"]
+    val_col = next((c for c in preferred_val_cols if c in df.columns and pd.api.types.is_numeric_dtype(df[c])), None)
     if val_col is None:
-        # fallback comum: 'carga_mwh' ou 'valor'
-        val_col = (
-            "carga_mwh"
-            if "carga_mwh" in df.columns
-            else ("valor" if "valor" in df.columns else None)
-        )
+        for c in df.columns:
+            nc = _norm_text(c)
+            if ("cargaverificada" in nc or "carga" in nc or "demanda" in nc) and ("mwmed" in nc or "mw" in nc or "valor" in nc):
+                if pd.api.types.is_numeric_dtype(df[c]):
+                    val_col = c
+                    break
+    if val_col is None and "carga_mwh" in df.columns:
+        val_col = "carga_mwh"
+    if val_col is None and "valor" in df.columns and pd.api.types.is_numeric_dtype(df["valor"]):
+        val_col = "valor"
     if val_col is None:
         warnings.warn("Coluna de valor de carga não detectada; pulando carga.")
         return None
 
-    # tenta inferir se é horário ou diário
+    # tenta inferir se é horário ou semi-horário
     is_hourly = False
     if "din_instante" in df.columns:
         df = df.rename(columns={"din_instante": "data"})
         is_hourly = True
+    elif "din_referenciautc" in df.columns:
+        df = df.rename(columns={"din_referenciautc": "data"})
+        is_hourly = True
+    elif "dat_referencia" in df.columns:
+        df = df.rename(columns={"dat_referencia": "data"})
     else:
-        has_hora = any(c in df.columns for c in ["hora", "hr", "h"]) or any(
-            "hora" in c for c in df.columns
-        )
+        has_hora = any(c in df.columns for c in ["hora", "hr", "h"]) or any("hora" in c for c in df.columns)
         if has_hora:
             is_hourly = True
-
     if is_hourly:
         df = _infer_datetime_index(df)
         outd = _ensure_daily_sum(df[[val_col]].rename(columns={val_col: "carga_mwh"}))
