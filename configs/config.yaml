@@ -1,138 +1,135 @@
-﻿seed: 42
-
+seed: 42
 paths:
-  raw_dir: "data/raw"
-  proc_dir: "data/processed"
-  features_dir: "data/features"
-  models_dir: "models"
-  reports_dir: "reports"
-
+  raw_dir: data/raw
+  proc_dir: data/processed
+  features_dir: data/features
+  models_dir: models
+  reports_dir: reports
 download:
-  since: "2022"             # Baixar dados a partir deste ano (ex.: "2022" ou "2022-01")
-
-# Parâmetros de região/área (podem ser sobrescritos via CLI)
+  since: '2022'
 regions:
-  # Submercado alvo para ETL do ONS (filtros em balanço, intercâmbio, ENA/EAR, constrained-off)
-  # Aceita: "SE/CO", "NE", "N", "S" (variações comuns como "SECO", "SE_CO" também são aceitas pelos mapeamentos do ETL).
-  submercado: "SE/CO"
-
-  # Área de carga para a API de Carga Verificada (apicarga.ons.org.br)
-  # Exemplos: "SECO" (submercado Sudeste/Centro-Oeste), "NE" (Nordeste), códigos de área estadual como "GO"/"PESE" (quando aplicável).
-  # Observação: se não informado, usa o padrão do código ("SECO").
-  carga_area: "SECO"
-
-  # Pontos (lat,lon) para agregação espacial da meteorologia (NASA POWER)
-  # Ajuste para outra UF/região conforme necessário.
+  submercado: SE/CO
+  carga_area: SECO
   meteo_points:
-    - [-16.7, -49.3]
-    - [-15.9, -48.2]
-    - [-18.0, -49.7]
-    - [-13.6, -46.9]
-
+  - - -16.7
+    - -49.3
+  - - -15.9
+    - -48.2
+  - - -18.0
+    - -49.7
+  - - -13.6
+    - -46.9
 problem:
-  horizon: "weekly"           # semanal é o padrão do projeto
-  target_name: "classe_risco" # "baixo" | "medio" | "alto"
-  forecast_horizon_weeks: 1    # horizonte de previsão T+1 semana (0 = nowcast)
-
-  # Regras de rotulagem (quantis da margem + ajustes)
+  horizon: weekly
+  target_name: classe_risco
+  forecast_horizon_weeks: 1
   label_rules:
-    # Coluna-base para quantis: usamos a margem vs. carga (suprimento − demanda)
-    # Esta escolha aproxima a adequação de energia semanal (quando negativa, há déficit)
-    coluna_margem: "margem_vs_carga_w"
-    # Quantis regulatórios aproximados: 5% (LOLP-alvo) e 20% como zona intermediária
-    q_baixo: 0.05            # <= -> "alto" (situações piores que o p5)
-    q_medio: 0.20            # (q_baixo, q_medio] -> "medio"; > -> "baixo"
-
-    # Ajuste por cortes (interpretação: superávit/indisponibilidade de escoamento)
+    coluna_margem: margem_vs_carga_w
+    q_baixo: 0.05
+    q_medio: 0.2
     curtail_downgrade:
-      usar_downgrade_cortes: true  # Ativa o rebaixamento do risco em 1 nível quando houver cortes renováveis relevantes.
-      corte_ratio_thr: 0.05        # Limiar da razão semanal cortes/(cortes+geração) renovável para acionar o ajuste (0.05 = 5%).
-      requer_saldo_importador_nao_positivo: true  # Se true, só aplica quando o saldo importador semanal <= 0 (sem importação líquida).
-
-    # Ajuste hidrológico (estiagem)
+      usar_downgrade_cortes: true
+      corte_ratio_thr: 0.05
+      requer_saldo_importador_nao_positivo: true
     usar_override_hidro: true
-    coluna_ear: "ear_pct_mean_w"
-    coluna_ena: "ena_mwmed_mean_w"
-    ear_q_baixo: 0.20        # EAR abaixo do Q20 -> "alto"
-    ena_q_baixo: 0.20        # ENA abaixo do Q20 por 2 semanas seguidas -> "alto"
+    coluna_ear: ear_pct_mean_w
+    coluna_ena: ena_mwmed_mean_w
+    ear_q_baixo: 0.2
+    ena_q_baixo: 0.2
     janelas_consecutivas_ena: 2
-
-    # Regras duras (proxies EPE/MME/ONS) — aplicadas após quantis/ajustes
     usar_regras_duras: true
-    # Reserva Operativa (proxy de PNS): razão de margem de reserva < 5% da demanda semanal -> "alto"
     reserva_operativa_frac: 0.05
-    # ENS (energia não suprida) semanal (proxy de CVaR_1% no limite): ENS/demanda ≥ 5% -> "alto"
     ens_ratio_thr: 0.05
-    # LOLP anual (proxy em janela móvel de 52 semanas): frequência > 5% -> "alto"
     lolp_thr: 0.05
-
 aggregation:
-  freq: "W"                  # semanal
+  freq: W
   features:
-    # agregações de diário->semanal
-    daily_aggs: ["mean", "sum", "max", "min", "std", "p95", "p05"]
-    # lags e janelas móveis semanais
-    lags_weeks: [1, 2, 4]
-    rolling_weeks: [2, 4]
-    # Filtro de qualidade por cobertura (proporção de valores NÃO nulos):
-    # Mantém apenas colunas diárias cuja cobertura seja >= min_nonnull_ratio.
-    # Exemplos:
-        #  - 0.50 (padrão): descarta colunas com cobertura < 50% (ou seja, >50% faltantes).
-        #  - 0.60: descarta colunas com cobertura < 60% (permite apenas colunas com >=60% preenchido).
-        #  - 0.80: exige alta cobertura; descarta colunas com <80% preenchido.
-        #  - 0.0: desativa o filtro (não descarta por cobertura).
-        #  - 1.0: mantém somente colunas totalmente preenchidas (100%).
+    daily_aggs:
+    - mean
+    - sum
+    - max
+    - min
+    - std
+    - p95
+    - p05
+    lags_weeks:
+    - 1
+    - 2
+    - 4
+    rolling_weeks:
+    - 2
+    - 4
     min_nonnull_ratio: 0.6
-    # Filtro semanal (após agregações e derivadas, antes de lags/rolagens):
-    # Remove features semanais cuja cobertura (não nulos) seja < limiar.
-    # Exemplos: 0.60 (recomendado para reduzir dimensionalidade), 0.0 (desativa), 1.0 (somente 100% preenchidas).
     min_nonnull_ratio_weekly: 0.6
-
 modeling:
-  holdout_fraction: 0.2     # fração do período mais recente reservado para teste final (hold-out)
-  metrics: ["f1_macro", "balanced_accuracy"]
+  holdout_fraction: 0.2
+  metrics:
+  - f1_macro
+  - balanced_accuracy
   cv:
-    type: "TimeSeriesSplit"
+    type: TimeSeriesSplit
     n_splits: 5
   models:
-    - name: "logreg"
-      type: "logistic_regression"
-      params:
-        class_weight: "balanced"
-        max_iter: 1000
-        n_jobs: -1
-      tuning:
-        use: true
-        method: "grid"
-        cv_splits: 3
-        refit: "f1_macro"
-        scoring: ["f1_macro", "balanced_accuracy"]
-        param_grid:
-          C: [0.1, 0.5, 1.0, 2.0, 5.0]
-          solver: ["lbfgs"]
-    - name: "xgb"
-      type: "xgboost"
-      params:
-        n_estimators: 400
-        learning_rate: 0.05
-        max_depth: 4
-        subsample: 0.9
-        colsample_bytree: 0.8
-        num_class: 3
-        eval_metric: "mlogloss"
-      tuning:
-        use: true
-        method: "grid"
-        cv_splits: 3
-        refit: "f1_macro"
-        scoring: ["f1_macro", "balanced_accuracy"]
-        param_grid:
-          n_estimators: [300, 500]          # número de árvores (mantém duas opções)
-          learning_rate: [0.03, 0.06]       # taxa de aprendizado; combina valores conservadores
-          max_depth: [3, 5]                 # controla profundidade das árvores e risco de overfitting
-          subsample: [0.8, 1.0]             # amostragem de linhas; 0.8 tende a generalizar melhor
-          colsample_bytree: [0.7, 0.9]      # amostragem de colunas; dois níveis amplamente usados
-          # min_child_weight, gamma, reg_alpha/reg_lambda mantidos nos valores default para conter o tempo
-
+  - name: logreg
+    type: logistic_regression
+    params:
+      class_weight: balanced
+      max_iter: 1000
+      n_jobs: -1
+    tuning:
+      use: true
+      method: grid
+      cv_splits: 3
+      refit: f1_macro
+      scoring:
+      - f1_macro
+      - balanced_accuracy
+      param_grid:
+        C:
+        - 0.1
+        - 0.5
+        - 1.0
+        - 2.0
+        - 5.0
+        solver:
+        - lbfgs
+  - name: xgb
+    type: xgboost
+    params:
+      n_estimators: 400
+      learning_rate: 0.05
+      max_depth: 4
+      subsample: 0.9
+      colsample_bytree: 0.8
+      num_class: 3
+      eval_metric: mlogloss
+    tuning:
+      use: true
+      method: grid
+      cv_splits: 3
+      refit: f1_macro
+      scoring:
+      - f1_macro
+      - balanced_accuracy
+      param_grid:
+        n_estimators:
+        - 300
+        - 500
+        learning_rate:
+        - 0.03
+        - 0.06
+        max_depth:
+        - 3
+        - 5
+        subsample:
+        - 0.8
+        - 1.0
+        colsample_bytree:
+        - 0.7
+        - 0.9
+  class_weight_adjustments:
+    baixo: 1.0
+    medio: 1.0
+    alto: 1.0
 output:
   top_k_features: 25

@@ -1,10 +1,11 @@
-# src/train.py
+﻿# src/train.py
 from __future__ import annotations
 import yaml
 from pathlib import Path
 import json
 import numpy as np
 import pandas as pd
+import warnings
 from sklearn.model_selection import TimeSeriesSplit, GridSearchCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
@@ -22,6 +23,22 @@ LABEL_MAP = {"baixo": 0, "medio": 1, "alto": 2}
 INV_LABEL_MAP = {v: k for k, v in LABEL_MAP.items()}
 
 
+if not hasattr(warnings, '_showwarning_orig'):
+    warnings._showwarning_orig = warnings.showwarning
+
+    def _portuguese_showwarning(message, category, filename, lineno, file=None, line=None):
+        texto = str(message)
+        if texto.startswith('Skipping features without any observed values'):
+            partes = texto.split(': ', 1)
+            colunas = partes[1] if len(partes) > 1 else ''
+            texto = ("Ignorando features sem valores observados: " + colunas +
+                     " Pelo menos um valor não nulo é necessário para a imputação com a mediana (strategy='median').")
+            message = category(texto)
+        warnings._showwarning_orig(message, category, filename, lineno, file=file, line=line)
+
+    warnings.showwarning = _portuguese_showwarning
+
+
 def encode_labels(y: pd.Series) -> pd.Series:
     """Encoda rótulos de string para inteiros estáveis 0/1/2.
 
@@ -35,12 +52,24 @@ def encode_labels(y: pd.Series) -> pd.Series:
     return pd.Series(c.codes, index=y.index, dtype=int)
 
 
-def compute_sample_weights(y: pd.Series) -> np.ndarray:
-    """Calcula pesos inversamente proporcionais à frequência de cada classe."""
+def compute_sample_weights(y: pd.Series, adjustments: dict[int, float] | None = None) -> np.ndarray:
+    """Calcula pesos inversamente proporcionais à frequência de cada classe.
+
+    Args:
+      y (pd.Series): rótulos inteiros (0=baixo,1=medio,2=alto).
+      adjustments (dict[int,float]|None): multiplicadores opcionais por classe.
+    """
     counts = y.value_counts()
     n_classes = len(counts)
     total = len(y)
     weight_map = {cls: total / (n_classes * cnt) for cls, cnt in counts.items() if cnt > 0}
+    if adjustments:
+        for cls, fator in adjustments.items():
+            if cls in weight_map and fator is not None:
+                try:
+                    weight_map[cls] *= float(fator)
+                except Exception:
+                    pass
     return y.map(weight_map).astype(float).to_numpy()
 
 
@@ -440,6 +469,16 @@ def main(config_path="configs/config.yaml"):
     H = int(cfg.get("problem", {}).get("forecast_horizon_weeks", 1))
     X = train_val_df
 
+    weight_adj_cfg = cfg.get("modeling", {}).get("class_weight_adjustments", {}) or {}
+    weight_adjustments = {}
+    for name, fator in weight_adj_cfg.items():
+        mapped = LABEL_MAP.get(name)
+        if mapped is not None:
+            try:
+                weight_adjustments[mapped] = float(fator)
+            except Exception:
+                pass
+
     resultados = []
     tss = TimeSeriesSplit(n_splits=cfg["modeling"]["cv"]["n_splits"])
     for mcfg in cfg["modeling"]["models"]:
@@ -477,7 +516,7 @@ def main(config_path="configs/config.yaml"):
             # Encoda rótulos para inteiros (0=baixo,1=medio,2=alto)
             ytr_enc = encode_labels(ytr_ok)
             yte_enc = encode_labels(yte_ok)
-            sample_weight_tr = compute_sample_weights(ytr_enc)
+            sample_weight_tr = compute_sample_weights(ytr_enc, adjustments=weight_adjustments)
 
             if use_tuning and param_grid:
                 inner_cv = TimeSeriesSplit(n_splits=inner_splits)
@@ -514,7 +553,7 @@ def main(config_path="configs/config.yaml"):
         X_full_ok, y_full_ok = X.loc[idx_ok], y_full.loc[idx_ok]
         # Encoda rótulos no ajuste final
         y_full_enc = encode_labels(y_full_ok)
-        sample_weight_full = compute_sample_weights(y_full_enc)
+        sample_weight_full = compute_sample_weights(y_full_enc, adjustments=weight_adjustments)
         if use_tuning and param_grid:
             inner_cv = TimeSeriesSplit(n_splits=inner_splits)
             gs = GridSearchCV(
@@ -578,4 +617,5 @@ def main(config_path="configs/config.yaml"):
 
 if __name__ == "__main__":
     main()
+
 
