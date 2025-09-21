@@ -113,23 +113,32 @@ modeling:
       - balanced_accuracy
       param_grid:
         n_estimators:
+        - 200
         - 300
         - 500
         learning_rate:
         - 0.03
         - 0.06
+        - 0.1
         max_depth:
         - 3
         - 5
+        - 6
         subsample:
+        - 0.6
         - 0.8
         - 1.0
         colsample_bytree:
-        - 0.7
-        - 0.9
+        - 0.6
+        - 0.8
+        - 1.0
   class_weight_adjustments:
     baixo: 1.0
     medio: 1.0
     alto: 1.0
+  oversample:
+    use: true
+    min_fraction: 0.33
+    random_state: 42
 output:
   top_k_features: 25

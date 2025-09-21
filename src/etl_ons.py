@@ -763,17 +763,30 @@ def etl_carga(input_path: Path, out_dir: Path, submercado: str) -> Optional[Path
 
     # detectar valor e data/hora
     preferred_val_cols = ["val_cargaglobalsmmg", "val_cargaglobal"]
-    val_col = next((c for c in preferred_val_cols if c in df.columns and pd.api.types.is_numeric_dtype(df[c])), None)
+    val_col = next(
+        (
+            c
+            for c in preferred_val_cols
+            if c in df.columns and pd.api.types.is_numeric_dtype(df[c])
+        ),
+        None,
+    )
     if val_col is None:
         for c in df.columns:
             nc = _norm_text(c)
-            if ("cargaverificada" in nc or "carga" in nc or "demanda" in nc) and ("mwmed" in nc or "mw" in nc or "valor" in nc):
+            if ("cargaverificada" in nc or "carga" in nc or "demanda" in nc) and (
+                "mwmed" in nc or "mw" in nc or "valor" in nc
+            ):
                 if pd.api.types.is_numeric_dtype(df[c]):
                     val_col = c
                     break
     if val_col is None and "carga_mwh" in df.columns:
         val_col = "carga_mwh"
-    if val_col is None and "valor" in df.columns and pd.api.types.is_numeric_dtype(df["valor"]):
+    if (
+        val_col is None
+        and "valor" in df.columns
+        and pd.api.types.is_numeric_dtype(df["valor"])
+    ):
         val_col = "valor"
     if val_col is None:
         warnings.warn("Coluna de valor de carga não detectada; pulando carga.")
@@ -790,7 +803,9 @@ def etl_carga(input_path: Path, out_dir: Path, submercado: str) -> Optional[Path
     elif "dat_referencia" in df.columns:
         df = df.rename(columns={"dat_referencia": "data"})
     else:
-        has_hora = any(c in df.columns for c in ["hora", "hr", "h"]) or any("hora" in c for c in df.columns)
+        has_hora = any(c in df.columns for c in ["hora", "hr", "h"]) or any(
+            "hora" in c for c in df.columns
+        )
         if has_hora:
             is_hourly = True
     if is_hourly:

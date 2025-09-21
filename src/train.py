@@ -1,621 +1,600 @@
-﻿# src/train.py
-from __future__ import annotations
-import yaml
-from pathlib import Path
+﻿from __future__ import annotations
+
 import json
+import warnings
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, Iterable, Optional, Tuple, List
+
 import numpy as np
 import pandas as pd
-import warnings
-from sklearn.model_selection import TimeSeriesSplit, GridSearchCV
-from sklearn.preprocessing import StandardScaler
-from sklearn.impute import SimpleImputer
-from sklearn.pipeline import Pipeline
-from sklearn.metrics import f1_score, balanced_accuracy_score
-from sklearn.linear_model import LogisticRegression
-from src.models.contiguous import ContiguousLabelClassifier
+import yaml
 from joblib import dump
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import balanced_accuracy_score, f1_score
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler
 
+# Dependência opcional (xgboost); mantém o código funcional sem ela.
+try:
+    from xgboost import XGBClassifier  # type: ignore
+
+    _HAS_XGB = True
+except Exception:  # pragma: no cover
+    _HAS_XGB = False
+
+# Componentes do projeto
 from src.data_loader import load_all_sources
 from src.feature_engineer import build_features_weekly
-
-# Mapeamento estável de rótulos (string -> inteiro)
-LABEL_MAP = {"baixo": 0, "medio": 1, "alto": 2}
-INV_LABEL_MAP = {v: k for k, v in LABEL_MAP.items()}
+from src.models.contiguous import ContiguousLabelClassifier
 
 
-if not hasattr(warnings, '_showwarning_orig'):
-    warnings._showwarning_orig = warnings.showwarning
-
-    def _portuguese_showwarning(message, category, filename, lineno, file=None, line=None):
-        texto = str(message)
-        if texto.startswith('Skipping features without any observed values'):
-            partes = texto.split(': ', 1)
-            colunas = partes[1] if len(partes) > 1 else ''
-            texto = ("Ignorando features sem valores observados: " + colunas +
-                     " Pelo menos um valor não nulo é necessário para a imputação com a mediana (strategy='median').")
-            message = category(texto)
-        warnings._showwarning_orig(message, category, filename, lineno, file=file, line=line)
-
-    warnings.showwarning = _portuguese_showwarning
+# ============================================================
+# ===================== CONFIG STRUCT ========================
+# ============================================================
 
 
-def encode_labels(y: pd.Series) -> pd.Series:
-    """Encoda rótulos de string para inteiros estáveis 0/1/2.
+@dataclass
+class Paths:
+    raw_dir: str
+    features_dir: str
+    models_dir: str
+    reports_dir: str
 
-    Lança erro se encontrar valores fora de {'baixo','medio','alto'}.
+
+# ============================================================
+# ================== RÓTULOS E THRESHOLDS ====================
+# ============================================================
+
+LABELS = ("baixo", "medio", "alto")
+LABEL_TO_INT = {"baixo": 0, "medio": 1, "alto": 2}
+INT_TO_LABEL = {v: k for k, v in LABEL_TO_INT.items()}
+
+
+def encode_labels(y: Iterable[str]) -> np.ndarray:
+    """Mapeia 'baixo'|'medio'|'alto' → 0|1|2 (compatível com evaluate.py)."""
+    y = pd.Series(y).astype("string")
+    return y.map(LABEL_TO_INT).to_numpy()
+
+
+def _pick_margin_column(cfg: Dict) -> str:
+    rules = cfg.get("problem", {}).get("label_rules", {})
+    col = rules.get("coluna_margem") or rules.get("coluna_margem_semana")
+    return col or "margem_suprimento_min_w"  # fallback
+
+
+def compute_label_thresholds(cfg: Dict, ref_df: pd.DataFrame) -> Dict[str, float]:
     """
-    cats = list(LABEL_MAP.keys())
-    c = pd.Categorical(y, categories=cats, ordered=True)
-    if (c.codes < 0).any():
-        unknown = set(pd.Series(y).iloc[np.where(c.codes < 0)[0]].unique())
-        raise ValueError(f"Rótulos desconhecidos encontrados: {unknown}")
-    return pd.Series(c.codes, index=y.index, dtype=int)
-
-
-def compute_sample_weights(y: pd.Series, adjustments: dict[int, float] | None = None) -> np.ndarray:
-    """Calcula pesos inversamente proporcionais à frequência de cada classe.
-
-    Args:
-      y (pd.Series): rótulos inteiros (0=baixo,1=medio,2=alto).
-      adjustments (dict[int,float]|None): multiplicadores opcionais por classe.
+    Calcula os thresholds (quantis) a partir de um DataFrame de referência (sem oversample).
+    Assumimos: valores MENORES de margem => MAIOR risco.
     """
-    counts = y.value_counts()
-    n_classes = len(counts)
-    total = len(y)
-    weight_map = {cls: total / (n_classes * cnt) for cls, cnt in counts.items() if cnt > 0}
-    if adjustments:
-        for cls, fator in adjustments.items():
-            if cls in weight_map and fator is not None:
-                try:
-                    weight_map[cls] *= float(fator)
-                except Exception:
-                    pass
-    return y.map(weight_map).astype(float).to_numpy()
+    rules = cfg.get("problem", {}).get("label_rules", {})
+    q_baixo = float(rules.get("q_baixo", 0.10))  # quantil para 'alto' risco
+    q_medio = float(rules.get("q_medio", 0.40))  # quantil para 'medio' risco
+
+    col_margem = _pick_margin_column(cfg)
+    if col_margem not in ref_df.columns:
+        raise KeyError(
+            f"[rotulagem] Coluna de margem '{col_margem}' não encontrada nas features."
+        )
+
+    s = ref_df[col_margem].dropna().astype(float)
+    if s.empty:
+        raise ValueError(
+            "[rotulagem] Série de margem vazia; não é possível calcular quantis."
+        )
+
+    t_low = float(np.nanquantile(s, q_baixo))
+    t_med = float(np.nanquantile(s, q_medio))
+    if not (t_low <= t_med):  # segurança contra distribuições patológicas
+        t_low, t_med = sorted([t_low, t_med])
+
+    return {
+        "t_low": t_low,
+        "t_med": t_med,
+        "col": col_margem,
+        "q_baixo": q_baixo,
+        "q_medio": q_medio,
+    }
 
 
-def _prefix_param_grid(grid: dict, prefix: str = "clf__") -> dict:
-    """Adiciona prefixo de etapa do Pipeline (ex.: 'clf__') nas chaves do grid.
-
-    Aceita chaves já prefixadas e retorna um novo dicionário.
+def rotular_semana_com_thresholds(
+    Xw: pd.DataFrame, cfg: Dict, thresholds: Dict[str, float]
+) -> pd.Series:
     """
-    if not grid:
-        return {}
-    out = {}
-    for k, v in grid.items():
-        out[k if k.startswith(prefix) else f"{prefix}{k}"] = v
-    return out
+    Aplica rótulos fixos ('baixo'|'medio'|'alto') com base em thresholds pré-calculados.
+    Regra: margem <= t_low → 'alto'; <= t_med → 'medio'; acima → 'baixo'.
+    """
+    col = thresholds["col"]
+    if col not in Xw.columns:
+        raise KeyError(f"[rotular_semana_com_thresholds] Coluna '{col}' ausente.")
+    x = Xw[col].astype(float)
 
+    t_low = thresholds["t_low"]
+    t_med = thresholds["t_med"]
 
-"""
-Funções auxiliares para tuning simples via GridSearchCV.
-"""
+    y = pd.Series(index=Xw.index, dtype="string")
+    y.loc[x <= t_low] = "alto"
+    y.loc[(x > t_low) & (x <= t_med)] = "medio"
+    y.loc[x > t_med] = "baixo"
+    return y
 
 
 def rotular_semana(
-    df: pd.DataFrame, cfg, ref_df: pd.DataFrame | None = None
+    Xw: pd.DataFrame, cfg: Dict, ref_df: Optional[pd.DataFrame] = None
 ) -> pd.Series:
-    """Gera rótulos semanais (baixo|medio|alto) com base na margem e ajustes.
+    """Rotula usando quantis do ref_df (ou do próprio Xw quando ref_df=None)."""
+    if ref_df is None:
+        ref_df = Xw
+    thr = compute_label_thresholds(cfg, ref_df)
+    return rotular_semana_com_thresholds(Xw, cfg, thr)
 
-    - Usa quantis de `coluna_margem` definidos em `cfg`.
-    - Pode calcular thresholds a partir de `ref_df` (ex.: conjunto de treino) para evitar vazamento.
-    - Aplica ajustes por cortes (downgrade) e hidrologia (override por EAR/ENA).
 
-    Args:
-      df (pandas.DataFrame): Features semanais da janela alvo.
-      cfg (dict): Configurações (label_rules etc.).
-      ref_df (pandas.DataFrame|None): DataFrame de referência para cálculos de quantis.
+# ============================================================
+# ================== OVERSAMPLING CONTROLADO =================
+# ============================================================
 
-    Returns:
-      pandas.Series: Série categórica com rótulos por semana.
+
+def _reindex_unique_if_datetime(df: pd.DataFrame) -> pd.DataFrame:
+    """Garante índice único caso seja DateTimeIndex e duplicatas surjam após concat."""
+    if isinstance(df.index, pd.DatetimeIndex):
+        dups = df.index.duplicated(keep=False)
+        if dups.any():
+            new_index = df.index.to_series()
+            counts = {}
+            for i, ts in enumerate(new_index):
+                c = counts.get(ts, 0)
+                counts[ts] = c + 1
+                if c > 0:
+                    new_index.iat[i] = ts + pd.Timedelta(microseconds=c)
+            df = df.copy()
+            df.index = pd.DatetimeIndex(new_index.values)
+    return df
+
+
+def oversample_minority(
+    X: pd.DataFrame,
+    y: pd.Series,
+    min_fraction: float = 0.25,
+    random_state: int = 42,
+) -> Tuple[pd.DataFrame, pd.Series]:
     """
-    r = cfg["problem"]["label_rules"]
-    margem_col = r["coluna_margem"]
-    q_baixo, q_med = r["q_baixo"], r["q_medio"]
+    Duplica linhas das classes com participação < min_fraction até atingir o piso.
+    Usar APENAS em treino/validação (nunca no hold-out).
+    """
+    if min_fraction <= 0 or min_fraction >= 1:
+        return X, y
 
-    # Fallback robusto de coluna de margem: tenta alternativas se a coluna pedida não existir
-    if margem_col not in df.columns:
-        candidates = [
-            margem_col,
-            "margem_vs_carga_w",
-            "margem_suprimento_w",
-            "margem_suprimento_min_w",
-        ]
-        margem_col = next((c for c in candidates if c in df.columns), None)
-        if margem_col is None:
-            raise ValueError(
-                f"Coluna de margem não encontrada para rotulagem. Tentadas: {candidates}"
+    rng = np.random.default_rng(random_state)
+    X_aug = X
+    y_aug = y.astype("string")
+
+    n_total = len(y_aug)
+    if n_total == 0:
+        return X_aug, y_aug
+
+    counts = y_aug.value_counts()
+    for cls in LABELS:
+        cnt = int(counts.get(cls, 0))
+        frac = cnt / n_total if n_total else 0.0
+        if frac >= min_fraction or cnt == 0:
+            continue
+
+        # k mínimo para atingir o piso no novo total:
+        need = (min_fraction * n_total - cnt) / (1.0 - min_fraction)
+        k = int(np.ceil(max(0.0, need)))
+
+        idx_cls = y_aug[y_aug == cls].index
+        if len(idx_cls) == 0:
+            continue
+        picks = rng.choice(idx_cls, size=k, replace=True)
+
+        X_aug = pd.concat([X_aug, X.loc[picks]], axis=0)
+        y_aug = pd.concat([y_aug, y_aug.loc[picks]], axis=0)
+        n_total = len(y_aug)
+
+    X_aug, y_aug = _reindex_unique_if_datetime(X_aug), y_aug
+    return X_aug, y_aug
+
+
+# ============================================================
+# ===================== MODELOS SUPORTADOS ===================
+# ============================================================
+
+
+def _make_estimator(model_cfg: Dict):
+    """Cria um Pipeline apropriado para cada modelo, com imputer e scaler quando necessário."""
+    mtype = (model_cfg.get("type") or "").lower()
+    params = model_cfg.get("params", {}) or {}
+
+    if mtype in ("logistic_regression", "logreg", "lr"):
+        base = LogisticRegression(
+            C=params.get("C", 1.0),
+            max_iter=params.get("max_iter", 500),
+            solver=params.get("solver", "saga"),
+            multi_class=params.get("multi_class", "auto"),
+            class_weight=params.get("class_weight", "balanced"),
+            n_jobs=params.get("n_jobs", None),
+        )
+        pipe = Pipeline(
+            steps=[
+                ("imputer", SimpleImputer(strategy="median")),
+                ("scaler", StandardScaler()),
+                ("model", base),
+            ]
+        )
+        return pipe
+
+    if mtype in ("xgboost", "xgb"):
+        if not _HAS_XGB:
+            warnings.warn(
+                "[train] xgboost não instalado; caindo para LogisticRegression."
+            )
+            # reaproveita o caminho da logreg (com scaler, que não atrapalha)
+            return _make_estimator({"type": "logistic_regression", "params": params})
+
+        base = XGBClassifier(
+            n_estimators=params.get("n_estimators", 300),
+            max_depth=params.get("max_depth", 4),
+            learning_rate=params.get("learning_rate", 0.05),
+            subsample=params.get("subsample", 0.8),
+            colsample_bytree=params.get("colsample_bytree", 0.8),
+            reg_lambda=params.get("reg_lambda", 1.0),
+            reg_alpha=params.get("reg_alpha", 0.1),
+            scale_pos_weight=params.get("scale_pos_weight", 1),
+            random_state=params.get("random_state", 42),
+            n_jobs=params.get("n_jobs", -1),
+            tree_method=params.get("tree_method", "hist"),
+        )
+        pipe = Pipeline(
+            steps=[
+                (
+                    "imputer",
+                    SimpleImputer(strategy="median"),
+                ),  # XGB não precisa de scaler
+                ("model", base),
+            ]
+        )
+        return pipe
+
+    raise ValueError(f"[train] Tipo de modelo não suportado: {mtype}")
+
+
+# ============================================================
+# ===================== UTIL/MÉTRICAS ========================
+# ============================================================
+
+
+def _normalize_pred_to_domain(y_pred_raw, est) -> pd.Series:
+    """Normaliza predições para rótulos canônicos ('baixo'|'medio'|'alto')."""
+    ypred = pd.Series(y_pred_raw)
+    if np.issubdtype(ypred.dtype, np.number):
+        ypred = ypred.astype(int).map(INT_TO_LABEL)
+
+    if not ypred.isin(LABELS).all() and hasattr(est, "inv_label_mapping_"):
+        invmap = getattr(est, "inv_label_mapping_", {})
+        try:
+            ypred2 = pd.Series(y_pred_raw).map(invmap)
+            ypred = ypred.where(ypred.isin(LABELS), ypred2)
+        except Exception:
+            pass
+
+    return ypred.astype("string")
+
+
+def _append_metrics_row(
+    paths: Paths, model_name: str, f1: float, ba: float
+) -> pd.DataFrame:
+    """Acrescenta/gera reports/metrics_cv.csv com linha {modelo, f1_macro, balanced_acc} e retorna o DF."""
+    reports_dir = Path(paths.reports_dir)
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = reports_dir / "metrics_cv.csv"
+
+    row = pd.DataFrame([{"modelo": model_name, "f1_macro": f1, "balanced_acc": ba}])
+    if csv_path.exists():
+        old = pd.read_csv(csv_path)
+        out = pd.concat([old, row], ignore_index=True)
+    else:
+        out = row
+    out.to_csv(csv_path, index=False)
+    return out
+
+
+# ============================================================
+# ============ SPLIT HOLDOUT (cauda temporal) ================
+# ============================================================
+
+
+def _split_holdout(
+    Xw: pd.DataFrame, holdout_fraction: float
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Separa hold-out pela cauda temporal (último bloco)."""
+    if holdout_fraction <= 0 or holdout_fraction >= 0.9:
+        return Xw, pd.DataFrame(index=pd.DatetimeIndex([], name=Xw.index.name))
+    n = len(Xw)
+    n_hold = max(1, int(np.floor(n * holdout_fraction)))
+    Xtr = Xw.iloc[:-n_hold]
+    Xte = Xw.iloc[-n_hold:]
+    return Xtr, Xte
+
+
+# ============================================================
+# ======================= TREINO DE 1 MODELO =================
+# ============================================================
+
+
+def _train_one_model(
+    model_cfg: Dict,
+    model_name: str,
+    cfg: Dict,
+    paths: Paths,
+    X_trainval_base: pd.DataFrame,
+    X_holdout: pd.DataFrame,
+    thresholds: Dict[str, float],
+    y_base: pd.Series,
+    y_hold: pd.Series,
+) -> Tuple[str, float, float]:
+    """Treina 1 modelo (CV + final), salva o .joblib e devolve (model_name, f1_macro_médio, bal_acc_médio)."""
+
+    # Oversample config
+    os_cfg = cfg.get("modeling", {}).get("oversample", {}) or {}
+    os_use = bool(os_cfg.get("use", False))
+    os_min_fraction = float(os_cfg.get("min_fraction", 0.25))
+    os_rs = int(os_cfg.get("random_state", 42))
+    os_in_cv = bool(os_cfg.get("in_cv", True))  # conservador por padrão
+
+    # Para compat: sempre gravar o parquet base como features_trainval.parquet
+    feat_dir = Path(paths.features_dir)
+    X_trainval_base.to_parquet(feat_dir / "features_trainval.parquet", index=True)
+
+    # Estimador (pipeline com imputer e, se logreg, scaler)
+    base_estimator = _make_estimator(model_cfg)
+    est = ContiguousLabelClassifier(
+        base_estimator=base_estimator, fallback_strategy="most_frequent"
+    )
+
+    # CV
+    n_splits = int(cfg.get("modeling", {}).get("cv", {}).get("n_splits", 5))
+    tss = TimeSeriesSplit(n_splits=n_splits)
+
+    cv_metrics = []
+    for fold, (itr, ite) in enumerate(tss.split(X_trainval_base), start=1):
+        Xtr, Xte = X_trainval_base.iloc[itr], X_trainval_base.iloc[ite]
+        ytr = rotular_semana_com_thresholds(Xtr, cfg, thresholds)
+        yte = rotular_semana_com_thresholds(Xte, cfg, thresholds)
+
+        # Filtro anti-NaN de labels
+        mask_tr = ytr.notna()
+        mask_te = yte.notna()
+        dropped_tr = int((~mask_tr).sum())
+        dropped_te = int((~mask_te).sum())
+        if dropped_tr or dropped_te:
+            print(
+                f"[cv:{model_name}] Fold {fold}: removendo NaN em labels -> treino:{dropped_tr} | teste:{dropped_te}"
+            )
+        Xtr, ytr = Xtr.loc[mask_tr], ytr.loc[mask_tr]
+        Xte, yte = Xte.loc[mask_te], yte.loc[mask_te]
+        if len(yte) == 0 or len(ytr) == 0:
+            print(f"[cv:{model_name}] Fold {fold}: sem amostras após filtro; pulando.")
+            continue
+
+        if os_use and os_in_cv:
+            Xtr, ytr = oversample_minority(
+                Xtr, ytr, min_fraction=os_min_fraction, random_state=os_rs
             )
 
-    base = ref_df if ref_df is not None else df
-    margem = df[margem_col].copy()
-    thr_baixo = base[margem_col].quantile(q_baixo)
-    thr_med = base[margem_col].quantile(q_med)
+        # Ajuste do modelo (pipeline fará imputação/escala usando APENAS Xtr)
+        est.fit(Xtr, encode_labels(ytr))
 
-    y = pd.Series(index=df.index, dtype=object)
-    y[margem <= thr_baixo] = "alto"
-    y[(margem > thr_baixo) & (margem <= thr_med)] = "medio"
-    y[margem > thr_med] = "baixo"
+        # Predição e normalização
+        y_pred_raw = est.predict(Xte)
+        y_pred = _normalize_pred_to_domain(y_pred_raw, est)
 
-    # Ajuste por cortes (curtailment) — interpretação: superávit local/operacional
-    cd = r.get("curtail_downgrade", {})
-    if cd.get("usar_downgrade_cortes", True):
-        ratio_thr = float(cd.get("corte_ratio_thr", 0.05))
-        req_no_import = bool(cd.get("requer_saldo_importador_nao_positivo", True))
-        ratio = df.get("ratio_corte_renovavel_w")
-        saldo_import = df.get("saldo_importador_mwh_sum_w")
-        if ratio is not None:
-            cond_ratio = ratio.fillna(0) > ratio_thr
-            cond_import = True
-            if req_no_import and (saldo_import is not None):
-                cond_import = saldo_import.fillna(0) <= 0  # não está importando líquido
-            cond = cond_ratio & cond_import
-            # Reduz o nível de risco apenas de alto->medio para manter a zona intermediária prevista na literatura
-            y.loc[cond & (y == "alto")] = "medio"
+        # Remover quaisquer predições fora do domínio/NaN
+        mask_ok = y_pred.isin(LABELS)
+        if not mask_ok.all():
+            n_bad = int((~mask_ok).sum())
+            print(
+                f"[cv:{model_name}] Fold {fold}: removendo {n_bad} predições fora do domínio/NaN."
+            )
+            y_pred = y_pred.loc[mask_ok]
+            yte = yte.loc[mask_ok]
+            Xte = Xte.loc[mask_ok]
+        if len(yte) == 0:
+            print(
+                f"[cv:{model_name}] Fold {fold}: teste vazio após normalização; pulando."
+            )
+            continue
 
-    # Ajuste hidrológico (estiagem)
-    if r.get("usar_override_hidro", True):
-        ear_col = r.get("coluna_ear")
-        ena_col = r.get("coluna_ena")
-        if ear_col in df.columns:
-            ear_thr = base[ear_col].quantile(r.get("ear_q_baixo", 0.2))
-            y[df[ear_col] <= ear_thr] = "alto"
-        if ena_col in df.columns:
-            ena_thr = base[ena_col].quantile(r.get("ena_q_baixo", 0.2))
-            k = int(r.get("janelas_consecutivas_ena", 2))
-            ena_low = (df[ena_col] <= ena_thr).rolling(k).sum() >= k
-            y[ena_low.fillna(False)] = "alto"
-
-    # Regras duras (proxies dos critérios EPE/MME/ONS) — Comentário
-    #
-    # Mapeamento pragmático semanal (determinístico) para critérios anuais:
-    # - Adequação de potência/Reserva Operativa (PNS):
-    #     reserve_margin_ratio_w = (suprimento − demanda) / demanda.
-    #     Se < 5% (reserva abaixo de 5% da demanda semanal), marcar "alto".
-    # - ENS (energia não suprida) vs. demanda:
-    #     ens_week_ratio = ENS_semana / demanda_semana.
-    #     Se ≥ 5%, marcar "alto" (proxy do CVaR_1% no limite regulatório).
-    # - LOLP (probabilidade de perda de carga):
-    #     lolp_52w = frequência móvel (52s) de semanas com déficit.
-    #     Se > 5%, marcar "alto" (proxy anual).
-    #
-    # Observação: estas regras duras atuam como overrides conservadores, após
-    # quantis e ajustes, aproximando os critérios oficiais sem simulação de cenários.
-    if bool(r.get("usar_regras_duras", True)):
-        reserva_frac = float(r.get("reserva_operativa_frac", 0.05))
-        ens_thr = float(r.get("ens_ratio_thr", 0.05))
-        lolp_thr = float(r.get("lolp_thr", 0.05))
-
-        rm = df.get("reserve_margin_ratio_w")
-        base_rm = (ref_df if ref_df is not None else df).get("reserve_margin_ratio_w")
-        if rm is not None and base_rm is not None:
-            reserva_threshold = base_rm.quantile(reserva_frac)
-            y[rm < reserva_threshold] = "alto"
-
-        ens_ratio = df.get("ens_week_ratio")
-        base_ens = (ref_df if ref_df is not None else df).get("ens_week_ratio")
-        if ens_ratio is not None and base_ens is not None:
-            threshold = base_ens.quantile(max(0.0, min(1.0, 1 - ens_thr)))
-            y[ens_ratio >= threshold] = "alto"
-
-        lolp = df.get("lolp_52w")
-        base_lolp = (ref_df if ref_df is not None else df).get("lolp_52w")
-        if lolp is not None and base_lolp is not None:
-            threshold = base_lolp.quantile(max(0.0, min(1.0, 1 - lolp_thr)))
-            y[lolp > threshold] = "alto"
-
-    return y
-
-
-def compute_label_thresholds(cfg, ref_df: pd.DataFrame) -> dict:
-    """Calcula thresholds fixos de rotulagem a partir do conjunto de treino/validação.
-
-    Retorna um dicionário JSON-serializável contendo valores de quantis para a margem,
-    thresholds para EAR/ENA (se existirem), parâmetros de curtailment e metadados.
-    """
-    r = cfg["problem"]["label_rules"]
-    margem_col = r["coluna_margem"]
-    q_baixo = float(r["q_baixo"]) if "q_baixo" in r else 0.1
-    q_medio = float(r["q_medio"]) if "q_medio" in r else 0.4
-
-    # Fallback robusto de coluna de margem na base de referência
-    if margem_col not in ref_df.columns:
-        candidates = [
-            margem_col,
-            "margem_vs_carga_w",
-            "margem_suprimento_w",
-            "margem_suprimento_min_w",
-        ]
-        margem_col = next((c for c in candidates if c in ref_df.columns), None)
-    has_margem = bool(margem_col and margem_col in ref_df.columns)
-    thr_baixo = float(ref_df[margem_col].quantile(q_baixo)) if has_margem else None
-    thr_medio = float(ref_df[margem_col].quantile(q_medio)) if has_margem else None
-
-    ear_col = r.get("coluna_ear")
-    ear_q = float(r.get("ear_q_baixo", 0.2)) if ear_col else None
-    ear_thr = (
-        float(ref_df[ear_col].quantile(ear_q))
-        if ear_col and ear_col in ref_df.columns
-        else None
-    )
-
-    ena_col = r.get("coluna_ena")
-    ena_q = float(r.get("ena_q_baixo", 0.2)) if ena_col else None
-    ena_thr = (
-        float(ref_df[ena_col].quantile(ena_q))
-        if ena_col and ena_col in ref_df.columns
-        else None
-    )
-    k = int(r.get("janelas_consecutivas_ena", 2))
-
-    cd = r.get("curtail_downgrade", {}) or {}
-    ratio_thr = float(cd.get("corte_ratio_thr", 0.05))
-    req_no_import = bool(cd.get("requer_saldo_importador_nao_positivo", True))
-
-    rm = ref_df.get("reserve_margin_ratio_w")
-    reserva_frac = float(r.get("reserva_operativa_frac", 0.05))
-    reserva_value = float(rm.quantile(reserva_frac)) if rm is not None else None
-
-    ens_series = ref_df.get("ens_week_ratio")
-    ens_frac = float(r.get("ens_ratio_thr", 0.05))
-    ens_value = float(ens_series.quantile(max(0.0, min(1.0, 1 - ens_frac)))) if ens_series is not None else None
-
-    lolp_series = ref_df.get("lolp_52w")
-    lolp_frac = float(r.get("lolp_thr", 0.05))
-    lolp_value = float(lolp_series.quantile(max(0.0, min(1.0, 1 - lolp_frac)))) if lolp_series is not None else None
-
-    thresholds = {
-        "margem": {
-            "col": margem_col,
-            "q_baixo": q_baixo,
-            "q_baixo_value": thr_baixo,
-            "q_medio": q_medio,
-            "q_medio_value": thr_medio,
-        },
-        "ear": {
-            "col": ear_col,
-            "q_baixo": ear_q,
-            "q_baixo_value": ear_thr,
-        },
-        "ena": {
-            "col": ena_col,
-            "q_baixo": ena_q,
-            "q_baixo_value": ena_thr,
-            "janelas_consecutivas": k,
-        },
-        "curtail": {
-            "ratio_thr": ratio_thr,
-            "requer_saldo_importador_nao_positivo": req_no_import,
-        },
-        "meta": {
-            "train_start": str(ref_df.index.min()) if len(ref_df.index) else None,
-            "train_end": str(ref_df.index.max()) if len(ref_df.index) else None,
-        },
-    }
-    # Critérios/proxies regulatórios persistidos para uso consistente em avaliação/inferência
-    thresholds["regulatory_proxies"] = {
-        "usar_regras_duras": bool(r.get("usar_regras_duras", True)),
-        "reserva_operativa_frac": float(r.get("reserva_operativa_frac", 0.05)),
-        "reserva_operativa_value": reserva_value,
-        "ens_ratio_thr": float(r.get("ens_ratio_thr", 0.05)),
-        "ens_ratio_value": ens_value,
-        "lolp_thr": float(r.get("lolp_thr", 0.05)),
-        "lolp_value": lolp_value,
-    }
-    return thresholds
-
-
-def rotular_semana_com_thresholds(df: pd.DataFrame, cfg, thresholds: dict) -> pd.Series:
-    """Rotula com thresholds fixos (sem recalcular quantis).
-
-    Aplica a mesma lógica de rotular_semana usando valores numéricos persistidos.
-    """
-    r = cfg["problem"]["label_rules"]
-    margem_info = thresholds.get("margem", {})
-    margem_col = margem_info.get("col", r.get("coluna_margem"))
-    thr_baixo = margem_info.get("q_baixo_value")
-    thr_medio = margem_info.get("q_medio_value")
-
-    if margem_col not in df.columns:
-        candidates = [
-            margem_col,
-            "margem_vs_carga_w",
-            "margem_suprimento_w",
-            "margem_suprimento_min_w",
-        ]
-        margem_col = next((c for c in candidates if c in df.columns), None)
-    if (margem_col is None) or (thr_baixo is None) or (thr_medio is None):
-        raise ValueError("Thresholds/coluna de margem ausentes para rotulagem.")
-
-    margem = df[margem_col].copy()
-    y = pd.Series(index=df.index, dtype=object)
-    y[margem <= thr_baixo] = "alto"
-    y[(margem > thr_baixo) & (margem <= thr_medio)] = "medio"
-    y[margem > thr_medio] = "baixo"
-
-    # ajuste por curtailment
-    cd = thresholds.get("curtail", {})
-    ratio_thr = float(cd.get("ratio_thr", 0.05))
-    req_no_import = bool(cd.get("requer_saldo_importador_nao_positivo", True))
-    ratio = df.get("ratio_corte_renovavel_w")
-    saldo_import = df.get("saldo_importador_mwh_sum_w")
-    if ratio is not None:
-        cond_ratio = ratio.fillna(0) > ratio_thr
-        cond_import = True
-        if req_no_import and (saldo_import is not None):
-            cond_import = saldo_import.fillna(0) <= 0
-        cond = cond_ratio & cond_import
-        # Reduz apenas de alto->medio para preservar a classe intermediária
-        y.loc[cond & (y == "alto")] = "medio"
-
-    # overrides hidrológicos
-    ear_info = thresholds.get("ear", {})
-    ear_col = ear_info.get("col")
-    ear_thr = ear_info.get("q_baixo_value")
-    if ear_col and (ear_col in df.columns) and (ear_thr is not None):
-        y[df[ear_col] <= ear_thr] = "alto"
-
-    ena_info = thresholds.get("ena", {})
-    ena_col = ena_info.get("col")
-    ena_thr = ena_info.get("q_baixo_value")
-    k = int(ena_info.get("janelas_consecutivas", r.get("janelas_consecutivas_ena", 2)))
-    if ena_col and (ena_col in df.columns) and (ena_thr is not None):
-        ena_low = (df[ena_col] <= ena_thr).rolling(k).sum() >= k
-        y[ena_low.fillna(False)] = "alto"
-
-    # Regras duras com thresholds persistidos (evita drift entre treino e avaliação)
-    reg = thresholds.get("regulatory_proxies", {})
-    if bool(reg.get("usar_regras_duras", True)):
-        reserva_frac = float(reg.get("reserva_operativa_frac", 0.05))
-        reserva_value = reg.get("reserva_operativa_value")
-        ens_thr = float(reg.get("ens_ratio_thr", 0.05))
-        lolp_thr = float(reg.get("lolp_thr", 0.05))
-
-        rm = df.get("reserve_margin_ratio_w")
-        if rm is not None:
-            threshold = reserva_value if reserva_value is not None else rm.quantile(reserva_frac)
-            y[rm < threshold] = "alto"
-
-        ens_ratio = df.get("ens_week_ratio")
-        if ens_ratio is not None:
-            threshold = reg.get("ens_ratio_value")
-            if threshold is None:
-                threshold = ens_ratio.quantile(max(0.0, min(1.0, 1 - ens_thr)))
-            y[ens_ratio >= threshold] = "alto"
-
-        lolp = df.get("lolp_52w")
-        if lolp is not None:
-            threshold = reg.get("lolp_value")
-            if threshold is None:
-                threshold = lolp.quantile(max(0.0, min(1.0, 1 - lolp_thr)))
-            y[lolp > threshold] = "alto"
-
-    return y
-
-
-def make_model(model_cfg):
-    """Cria o estimador conforme o bloco `model_cfg` (logreg ou xgboost).
-
-    Inclui imputação no pipeline para evitar vazamento na fase de treino.
-
-    Args:
-      model_cfg (dict): Especificação com chaves `type` e `params`.
-
-    Returns:
-      sklearn.pipeline.Pipeline | xgboost.XGBClassifier: Estimador configurado.
-    """
-    if model_cfg["type"] == "logistic_regression":
-        return Pipeline(
-            [
-                ("imputer", SimpleImputer(strategy="median")),
-                ("scaler", StandardScaler(with_mean=False)),
-                ("clf", ContiguousLabelClassifier(LogisticRegression(**model_cfg["params"]))),
-            ]
+        y_true = encode_labels(yte)
+        y_pred_enc = encode_labels(y_pred)
+        fold_f1 = f1_score(y_true, y_pred_enc, average="macro", zero_division=0)
+        fold_ba = balanced_accuracy_score(y_true, y_pred_enc)
+        cv_metrics.append((fold_f1, fold_ba))
+        print(
+            f"[cv:{model_name}] Fold {fold}/{n_splits}: f1_macro={fold_f1:.3f} | bal_acc={fold_ba:.3f}"
         )
-    elif model_cfg["type"] == "xgboost":
-        from xgboost import XGBClassifier
 
-        return Pipeline(
-            [
-                ("imputer", SimpleImputer(strategy="median")),
-                ("clf", ContiguousLabelClassifier(XGBClassifier(**model_cfg["params"]))),
-            ]
-        )
+    if cv_metrics:
+        mf1 = float(np.mean([m[0] for m in cv_metrics]))
+        mba = float(np.mean([m[1] for m in cv_metrics]))
+        print(f"[cv:{model_name}] MÉDIAS: f1_macro={mf1:.3f} | bal_acc={mba:.3f}")
     else:
-        raise ValueError(f"Modelo não suportado: {model_cfg['type']}")
+        mf1 = float("nan")
+        mba = float("nan")
+        print(f"[cv:{model_name}] Nenhum fold válido para métricas.")
+
+    # Treino final (em todo train_val_base)
+    X_final = X_trainval_base.copy()
+    y_final = y_base.copy()
+    mask_fin = y_final.notna()
+    n_drop_fin = int((~mask_fin).sum())
+    if n_drop_fin > 0:
+        print(
+            f"[train:{model_name}] Removendo {n_drop_fin} amostras com label NaN no ajuste final."
+        )
+    X_final, y_final = X_final.loc[mask_fin], y_final.loc[mask_fin]
+
+    if os_use and not os_in_cv:
+        X_final, y_final = oversample_minority(
+            X_final, y_final, min_fraction=os_min_fraction, random_state=os_rs
+        )
+
+    est.fit(X_final, encode_labels(y_final))
+
+    # metadados no próprio objeto
+    setattr(est, "label_thresholds_", thresholds)
+    setattr(est, "label_mapping_", LABEL_TO_INT)
+    setattr(est, "inv_label_mapping_", INT_TO_LABEL)
+
+    # Persistência
+    model_path = Path(paths.models_dir) / f"{model_name}.joblib"
+    dump(est, model_path)
+    print(f"[train:{model_name}] Modelo salvo em: {model_path}")
+
+    # Persistir thresholds por modelo (e o genérico para compatibilidade)
+    with open(
+        Path(paths.models_dir) / f"label_thresholds_{model_name}.json",
+        "w",
+        encoding="utf-8",
+    ) as f:
+        json.dump(thresholds, f, ensure_ascii=False, indent=2)
+    with open(
+        Path(paths.models_dir) / "label_thresholds.json", "w", encoding="utf-8"
+    ) as f:
+        json.dump(thresholds, f, ensure_ascii=False, indent=2)
+
+    return model_name, mf1, mba
 
 
-def main(config_path="configs/config.yaml"):
-    """Treina os modelos definidos em `configs/config.yaml` com CV temporal.
+# ============================================================
+# ============================ MAIN ==========================
+# ============================================================
 
-    - Constrói features semanais, gera rótulos por fold (sem vazamento) e avalia com TSS.
-    - Reajusta em todo o conjunto e salva artefatos `.joblib` e métricas de CV.
 
-    Args:
-      config_path (str): Caminho para o arquivo de configuração YAML.
-    """
+def main(
+    config_path: str = "configs/config.yaml", model_name: Optional[str] = None
+) -> None:
+    # -------------------- Carregar config --------------------
     cfg = yaml.safe_load(open(config_path, "r", encoding="utf-8"))
-    out_dir = Path(cfg["paths"]["models_dir"])
-    out_dir.mkdir(parents=True, exist_ok=True)
 
+    paths = Paths(
+        raw_dir=cfg["paths"]["raw_dir"],
+        features_dir=cfg["paths"]["features_dir"],
+        models_dir=cfg["paths"]["models_dir"],
+        reports_dir=cfg["paths"]["reports_dir"],
+    )
+    feat_dir = Path(paths.features_dir)
+    feat_dir.mkdir(parents=True, exist_ok=True)
+    Path(paths.models_dir).mkdir(parents=True, exist_ok=True)
+    Path(paths.reports_dir).mkdir(parents=True, exist_ok=True)
+
+    # -------------------- Preparar features (UMA vez) --------
     data = load_all_sources(cfg)
     Xw = build_features_weekly(data, cfg)
-    # limpa colunas completamente vazias; imputação fica no pipeline (evita vazamento)
-    Xw = Xw.dropna(axis=1, how="all")
+    Xw = Xw.dropna(axis=1, how="all").sort_index()
+    if Xw.empty:
+        raise RuntimeError("[train] Nenhuma feature semanal disponível.")
 
-    # --- Hold-out split for final evaluation ---
-    holdout_frac = float(cfg.get("modeling", {}).get("holdout_fraction", 0.2))
-    holdout_frac = 0.0 if holdout_frac < 0 else holdout_frac
-    test_size = int(np.ceil(len(Xw) * holdout_frac)) if holdout_frac > 0 else 0
-    if test_size >= len(Xw):
-        test_size = max(1, len(Xw) // 5)
-    if test_size > 0:
-        train_val_df = Xw.iloc[:-test_size]
-        test_df = Xw.iloc[-test_size:]
-    else:
-        train_val_df = Xw.copy()
-        test_df = Xw.iloc[0:0]
-    feats_dir = Path(cfg["paths"]["features_dir"])
-    feats_dir.mkdir(parents=True, exist_ok=True)
-    train_val_df.to_parquet(feats_dir / "features_trainval.parquet")
-    if len(test_df) > 0:
-        test_df.to_parquet(feats_dir / "features_test_holdout.parquet")
+    # -------------------- Split hold-out (UMA vez) -----------
+    hold_frac = float(cfg.get("modeling", {}).get("holdout_fraction", 0.2))
+    train_val_base, holdout = _split_holdout(Xw, hold_frac)
+
+    # Persistir parquets de referência (pré-oversample) para auditoria
+    (feat_dir / "features_trainval_base.parquet").parent.mkdir(
+        parents=True, exist_ok=True
+    )
+    train_val_base.to_parquet(feat_dir / "features_trainval_base.parquet", index=True)
+    holdout.to_parquet(feat_dir / "features_test_holdout.parquet", index=True)
+
     print(
-        f"[train] Hold-out saved: train_val={len(train_val_df)} weeks, test={len(test_df)} weeks in {feats_dir}."
+        f"[train] Tamanhos: train_val_base={len(train_val_base)} | holdout={len(holdout)}"
     )
 
-    # thresholds fixos a partir do conjunto de treino/validação
-    thresholds = compute_label_thresholds(cfg, train_val_df)
+    # -------------------- Thresholds fixos (UMA vez) ---------
+    thresholds = compute_label_thresholds(cfg, train_val_base)
+    with open(
+        Path(paths.models_dir) / "label_thresholds.json", "w", encoding="utf-8"
+    ) as f:
+        json.dump(thresholds, f, ensure_ascii=False, indent=2)
 
-    H = int(cfg.get("problem", {}).get("forecast_horizon_weeks", 1))
-    X = train_val_df
+    # -------------------- Rótulos base (UMA vez) -------------
+    y_base = rotular_semana_com_thresholds(train_val_base, cfg, thresholds)
+    y_hold = rotular_semana_com_thresholds(holdout, cfg, thresholds)
 
-    weight_adj_cfg = cfg.get("modeling", {}).get("class_weight_adjustments", {}) or {}
-    weight_adjustments = {}
-    for name, fator in weight_adj_cfg.items():
-        mapped = LABEL_MAP.get(name)
-        if mapped is not None:
-            try:
-                weight_adjustments[mapped] = float(fator)
-            except Exception:
-                pass
+    # Log das distribuições base/holdout
+    def _dist(s: pd.Series) -> Dict[str, str]:
+        s = s.dropna()
+        cnt = s.value_counts().reindex(LABELS).fillna(0).astype(int)
+        total = int(cnt.sum())
+        pct = (cnt / max(total, 1) * 100.0).round(2)
+        return {k: f"{int(cnt[k])} ({pct[k]}%)" for k in LABELS}
 
-    resultados = []
-    tss = TimeSeriesSplit(n_splits=cfg["modeling"]["cv"]["n_splits"])
-    for mcfg in cfg["modeling"]["models"]:
-        model = make_model(mcfg)
-        f1s, bals = [], []
-        # tuning (opcional) por modelo
-        tune_cfg = mcfg.get("tuning", {}) or {}
-        use_tuning = bool(tune_cfg.get("use", False))
-        inner_splits = int(tune_cfg.get("cv_splits", 3))
-        scoring = (
-            tune_cfg.get("scoring", ["f1_macro", "balanced_accuracy"]) or "f1_macro"
+    print("[train] Distribuição (train_val_base):", _dist(y_base))
+    print("[train] Distribuição (holdout):      ", _dist(y_hold))
+
+    # -------------------- Quais modelos treinar? -------------
+    models_cfg: List[Dict] = cfg.get("modeling", {}).get("models", [])
+    selected: List[Dict] = []
+
+    if model_name:
+        m = None
+        for mc in models_cfg:
+            if (mc.get("name") or "").lower() == model_name.lower():
+                m = mc
+                break
+        if m is None:
+            m = {"name": model_name, "type": model_name, "params": {}}
+        selected = [m]
+    else:
+        if not models_cfg:
+            models_cfg = [
+                {"name": "logreg", "type": "logistic_regression", "params": {}},
+                {"name": "xgb", "type": "xgboost", "params": {}},
+            ]
+        selected = models_cfg
+
+    # -------------------- Loop de modelos --------------------
+    all_rows = []
+    for mc in selected:
+        name = (mc.get("name") or mc.get("type") or "model").lower()
+        print(f"\n=========== Treinando modelo: {name} ===========")
+        mdl_name, mf1, mba = _train_one_model(
+            model_cfg=mc,
+            model_name=name,
+            cfg=cfg,
+            paths=paths,
+            X_trainval_base=train_val_base,
+            X_holdout=holdout,
+            thresholds=thresholds,
+            y_base=y_base,
+            y_hold=y_hold,
         )
-        refit_metric = tune_cfg.get("refit", "f1_macro")
-        # grid único (sem duas fases)
-        param_grid = _prefix_param_grid(tune_cfg.get("param_grid", {}))
+        _append_metrics_row(paths, mdl_name, mf1, mba)
+        all_rows.append({"modelo": mdl_name, "f1_macro": mf1, "balanced_acc": mba})
 
-        for tr_idx, te_idx in tss.split(X):
-            Xtr, Xte = X.iloc[tr_idx], X.iloc[te_idx]
-            # Rotulagem sem vazamento: thresholds calculados no treino, aplicados em treino e teste
-            ytr = rotular_semana(Xtr, cfg, ref_df=Xtr)
-            yte = rotular_semana(Xte, cfg, ref_df=Xtr)
-            # Horizonte T+H: alinhamento para prever t+H
-            if H > 0:
-                ytr = ytr.shift(-H)
-                yte = yte.shift(-H)
-            # Alinha para índices com rótulo disponível
-            tr_idx_ok = ytr.dropna().index
-            te_idx_ok = yte.dropna().index
-            Xtr_ok, ytr_ok = Xtr.loc[tr_idx_ok], ytr.loc[tr_idx_ok]
-            Xte_ok, yte_ok = Xte.loc[te_idx_ok], yte.loc[te_idx_ok]
-
-            if len(Xtr_ok) == 0 or len(Xte_ok) == 0:
-                continue
-
-            # Encoda rótulos para inteiros (0=baixo,1=medio,2=alto)
-            ytr_enc = encode_labels(ytr_ok)
-            yte_enc = encode_labels(yte_ok)
-            sample_weight_tr = compute_sample_weights(ytr_enc, adjustments=weight_adjustments)
-
-            if use_tuning and param_grid:
-                inner_cv = TimeSeriesSplit(n_splits=inner_splits)
-                gs = GridSearchCV(
-                    estimator=model,
-                    param_grid=param_grid,
-                    scoring=scoring,
-                    refit=refit_metric,
-                    cv=inner_cv,
-                    n_jobs=-1,
-                    error_score=np.nan,
-                )
-                gs.fit(Xtr_ok, ytr_enc, **{'clf__sample_weight': sample_weight_tr})
-                best_est = gs.best_estimator_
-                pred = best_est.predict(Xte_ok)
-            else:
-                model.fit(Xtr_ok, ytr_enc, **{'clf__sample_weight': sample_weight_tr})
-                pred = model.predict(Xte_ok)
-            f1s.append(f1_score(yte_enc, pred, average="macro"))
-            bals.append(balanced_accuracy_score(yte_enc, pred))
-        resultados.append(
-            {
-                "modelo": mcfg["name"],
-                "f1_macro": float(np.mean(f1s)),
-                "balanced_acc": float(np.mean(bals)),
-            }
-        )
-
-        # re-ajusta no conjunto de treino/validacao e salva artefato
-        y_full = rotular_semana(X, cfg, ref_df=X)
-        if H > 0:
-            y_full = y_full.shift(-H)
-        idx_ok = y_full.dropna().index
-        X_full_ok, y_full_ok = X.loc[idx_ok], y_full.loc[idx_ok]
-        # Encoda rótulos no ajuste final
-        y_full_enc = encode_labels(y_full_ok)
-        sample_weight_full = compute_sample_weights(y_full_enc, adjustments=weight_adjustments)
-        if use_tuning and param_grid:
-            inner_cv = TimeSeriesSplit(n_splits=inner_splits)
-            gs = GridSearchCV(
-                estimator=model,
-                param_grid=param_grid,
-                scoring=scoring,
-                refit=refit_metric,
-                cv=inner_cv,
-                n_jobs=-1,
-                error_score=np.nan,
+    # -------------------- Tabela consolidada -----------------
+    metrics_df = pd.DataFrame(all_rows)
+    print("\n=== Métricas CV consolidadas ===")
+    with pd.option_context("display.max_columns", None, "display.width", 120):
+        print(
+            metrics_df.sort_values(by="f1_macro", ascending=False).to_string(
+                index=False
             )
-            gs.fit(X_full_ok, y_full_enc, **{'clf__sample_weight': sample_weight_full})
-            final_model = gs.best_estimator_
-            # opcional: salvar melhores params
-            try:
-                best_params_path = (
-                    Path(cfg["paths"]["reports_dir"])
-                    / f"tuning_{mcfg['name']}_best_params.json"
-                )
-                best_params_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(best_params_path, "w", encoding="utf-8") as jf:
-                    json.dump(gs.best_params_, jf, ensure_ascii=False, indent=2)
-            except Exception:
-                pass
-        else:
-            model.fit(X_full_ok, y_full_enc, **{'clf__sample_weight': sample_weight_full})
-            final_model = model
-
-        # Anexa mapeamentos ao artefato para uso na avaliação/inferência
-        try:
-            setattr(final_model, "label_mapping_", LABEL_MAP)
-            setattr(final_model, "inv_label_mapping_", INV_LABEL_MAP)
-            setattr(final_model, "label_thresholds_", thresholds)
-        except Exception:
-            pass
-
-        try:
-            clf_step = getattr(getattr(final_model, "named_steps", {}), "get", lambda *args, **kwargs: None)("clf")
-            if isinstance(clf_step, ContiguousLabelClassifier):
-                setattr(final_model, "contiguous_inverse_map_", getattr(clf_step, "_inverse_map_", {}))
-                setattr(final_model, "contiguous_forward_map_", getattr(clf_step, "_forward_map_", {}))
-        except Exception:
-            pass
-
-        # grava thresholds também em JSON (um por modelo)
-        try:
-            with open(
-                out_dir / f"label_thresholds_{mcfg['name']}.json", "w", encoding="utf-8"
-            ) as jf:
-                json.dump(thresholds, jf, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
-
-        dump(final_model, out_dir / f"{mcfg['name']}.joblib")
-
-    rep_dir = Path(cfg["paths"]["reports_dir"])
-    rep_dir.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(resultados).to_csv(rep_dir / "cv_scores.csv", index=False)
-    print(pd.DataFrame(resultados))
+        )
 
 
 if __name__ == "__main__":
-    main()
+    # Ex.: python src/train.py
+    #     python src/train.py configs/config.yaml xgb
+    import sys
 
-
+    cfg_path = "configs/config.yaml"
+    mname: Optional[str] = None
+    if len(sys.argv) >= 2:
+        cfg_path = sys.argv[1]
+    if len(sys.argv) >= 3:
+        mname = sys.argv[2]
+    main(cfg_path, mname)
