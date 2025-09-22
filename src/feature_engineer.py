@@ -200,12 +200,20 @@ def build_features_weekly(data: Dict[str, pd.DataFrame], cfg: Dict) -> pd.DataFr
             clima["precip_30d_mm"] = (
                 clima["precipitacao_mm"].rolling(30, min_periods=1).sum()
             )
+            clima["precip_90d_mm"] = (
+                clima["precipitacao_mm"].rolling(90, min_periods=1).sum()
+            )
+            clima["precip_180d_mm"] = (
+                clima["precipitacao_mm"].rolling(180, min_periods=1).sum()
+            )
         cand = [
             "ghi",
             "temp2m_c",
             "precipitacao_mm",
             "precip_14d_mm",
             "precip_30d_mm",
+            "precip_90d_mm",
+            "precip_180d_mm",
         ]
         sel = _filter_present_and_dense(clima, cand)
         if sel:
