@@ -1,12 +1,35 @@
+# ======================================================================
+# Semente global para reproducibilidade
+# ======================================================================
 seed: 42
+
+# ======================================================================
+# Pastas do projeto
+# - raw_dir: entradas brutas baixadas do ONS / meteo
+# - proc_dir: intermediários diários (se usados pela sua pipeline)
+# - features_dir: saídas de engenharia de atributos (ex.: weekly)
+# - models_dir: modelos treinados (.joblib) e thresholds
+# - reports_dir: métricas consolidadas e artefatos de avaliação
+# ======================================================================
 paths:
   raw_dir: data/raw
   proc_dir: data/processed
   features_dir: data/features
   models_dir: models
   reports_dir: reports
+
+# ======================================================================
+# Janela mínima para download dos dados (ex.: 2022 até hoje)
+# ======================================================================
 download:
   since: '2022'
+
+# ======================================================================
+# Escopo geográfico / pontos meteorológicos
+# - submercado: etiqueta usada nas bases do ONS
+# - carga_area: rótulo para séries de carga
+# - meteo_points: lista de [lat, lon] (graus decimais)
+# ======================================================================
 regions:
   submercado: SE/CO
   carga_area: SECO
@@ -19,6 +42,19 @@ regions:
     - -49.7
   - - -13.6
     - -46.9
+
+# ======================================================================
+# Definição do problema de previsão e regras de rotulagem
+# - horizon: granularidade-alvo (weekly)
+# - target_name: coluna de classe no conjunto final (após rotular)
+# - forecast_horizon_weeks: deslocamento para frente do alvo (H)
+# - label_rules: regras de classe baseadas na "margem" e reforços
+#   * coluna_margem: série semanal usada para os quantis
+#   * q_baixo / q_medio: quantis que separam alto/medio/baixo
+#   * curtail_downgrade: rebaixa classe se houver cortes relevantes
+#   * usar_override_hidro / ear/ena: endurecem rótulo via hidro
+#   * usar_regras_duras / reserva_operativa_frac / ens/lolp: regras extra
+# ======================================================================
 problem:
   horizon: weekly
   target_name: classe_risco
@@ -27,20 +63,34 @@ problem:
     coluna_margem: margem_vs_carga_w
     q_baixo: 0.05
     q_medio: 0.2
+
+    # --- Rebaixamento por cortes (eólica/FV) --------------------------
     curtail_downgrade:
       usar_downgrade_cortes: true
-      corte_ratio_thr: 0.05
-      requer_saldo_importador_nao_positivo: true
+      corte_ratio_thr: 0.05                       # fração do total para acionar rebaixamento
+      requer_saldo_importador_nao_positivo: true  # só rebaixa se não estiver 'comprando' do SIN
+
+    # --- Overrides hidrológicos ---------------------------------------
     usar_override_hidro: true
-    coluna_ear: ear_pct_mean_w
-    coluna_ena: ena_mwmed_mean_w
-    ear_q_baixo: 0.2
-    ena_q_baixo: 0.2
-    janelas_consecutivas_ena: 2
+    coluna_ear: ear_pct_mean_w                    # EAR% médio na semana
+    coluna_ena: ena_mwmed_mean_w                  # ENA MWmed média na semana
+    ear_q_baixo: 0.2                              # quantil que aciona endurecimento por EAR
+    ena_q_baixo: 0.2                              # quantil que aciona endurecimento por ENA
+    janelas_consecutivas_ena: 2                   # exige N semanas ruins seguidas para valer
+
+    # --- Regras duras (margem operacional / ENS / LOLP) ---------------
     usar_regras_duras: true
-    reserva_operativa_frac: 0.05
-    ens_ratio_thr: 0.05
-    lolp_thr: 0.05
+    reserva_operativa_frac: 0.05                  # reserva operacional mínima como fração da carga
+    ens_ratio_thr: 0.05                           # ENS/Carga acima disso endurece classe
+    lolp_thr: 0.05                                # prob. de perda de carga acima disso endurece
+
+# ======================================================================
+# Engenharia de atributos semanais
+# - freq: frequência alvo
+# - features.daily_aggs: agregações diárias antes de consolidar na semana
+# - lags_weeks / rolling_weeks: defasagens e janelas móveis (em semanas)
+# - min_nonnull_ratio(_weekly): filtros de cobertura mínima
+# ======================================================================
 aggregation:
   freq: W
   features:
@@ -61,14 +111,37 @@ aggregation:
     - 4
     min_nonnull_ratio: 0.6
     min_nonnull_ratio_weekly: 0.6
+
+# ======================================================================
+# Configuração de modelagem
+# - holdout_fraction: fatia final do histórico reservada para teste
+# - metrics: quais métricas consolidar no relatório
+# - cv: estratégia de validação (TimeSeriesSplit com n_splits)
+# - models: definição de cada modelo, seus hiperparâmetros base e tuning
+# - class_weight_adjustments: pesos adicionais por rótulo (sample_weight)
+# - oversample: duplicação da classe minoritária no TREINO (nunca no holdout)
+# ======================================================================
 modeling:
   holdout_fraction: 0.2
+
+  # Métricas que serão reportadas pós-CV
   metrics:
   - f1_macro
   - balanced_accuracy
+
+  # Validação cruzada temporal
   cv:
     type: TimeSeriesSplit
     n_splits: 5
+
+  # --------------------------------------------------------------------
+  # Modelos treinados quando nenhum é passado na CLI (main.py train)
+  # - params: hiperparâmetros default do estimador
+  # - tuning: busca de hiperparâmetros (grid), com CV interna
+  #   * scoring/refit: métricas usadas dentro do grid
+  #   * cv_splits: n° de folds só do grid (pode ser menor que o CV “oficial”)
+  #   * param_grid: espaço de busca (nomes simples aqui; o train faz o mapeamento)
+  # --------------------------------------------------------------------
   models:
   - name: logreg
     type: logistic_regression
@@ -93,6 +166,7 @@ modeling:
         - 5.0
         solver:
         - lbfgs
+
   - name: xgb
     type: xgboost
     params:
@@ -101,8 +175,8 @@ modeling:
       max_depth: 4
       subsample: 0.9
       colsample_bytree: 0.8
-      num_class: 3
-      eval_metric: mlogloss
+      num_class: 3                # problema 3-classes (baixo/medio/alto)
+      eval_metric: mlogloss       # métrica nativa do XGB (não afeta o scorer do grid)
     tuning:
       use: true
       method: grid
@@ -132,13 +206,29 @@ modeling:
         - 0.6
         - 0.8
         - 1.0
+
+  # --------------------------------------------------------------------
+  # Pesos adicionais por rótulo (aplicados como sample_weight no fit)
+  # - útil p/ reforçar a classe 'medio' sem mexer na regra de rótulos
+  # --------------------------------------------------------------------
   class_weight_adjustments:
     baixo: 1.0
     medio: 1.0
     alto: 1.0
+
+  # --------------------------------------------------------------------
+  # Oversampling da classe minoritária no TREINO (nunca no holdout)
+  # - use: ativa o oversample
+  # - min_fraction: piso alvo por classe (ex.: 0.33 => ≥33%)
+  # - random_state: reprodutibilidade
+  # --------------------------------------------------------------------
   oversample:
     use: true
     min_fraction: 0.33
     random_state: 42
+
+# ======================================================================
+# Quantidade de features top-k (se houver seleção/relato no pipeline)
+# ======================================================================
 output:
   top_k_features: 25
