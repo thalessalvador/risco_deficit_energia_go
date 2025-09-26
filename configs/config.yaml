@@ -60,6 +60,7 @@ problem:
 #  target_name: classe_risco
   forecast_horizon_weeks: 1
   label_rules:
+  #  coluna_margem: margem_suprimento_min_w
     coluna_margem: margem_vs_carga_w
     q_baixo: 0.05
     q_medio: 0.2

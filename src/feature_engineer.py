@@ -134,6 +134,7 @@ def build_features_weekly(data: Dict[str, pd.DataFrame], cfg: Dict) -> pd.DataFr
     rolls = cfg["aggregation"]["features"]["rolling_weeks"]
 
     bases = []
+    daily_margin_parts: Dict[str, pd.Series] = {}
 
     def _filter_present_and_dense(df: pd.DataFrame, cols: List[str]) -> List[str]:
         cols = [c for c in cols if c in df.columns]
@@ -164,14 +165,21 @@ def build_features_weekly(data: Dict[str, pd.DataFrame], cfg: Dict) -> pd.DataFr
             ],
         )
         if sel:
-            bases.append(weekly_aggregate(data["ger_fontes"][sel], hows))
+            gf = data["ger_fontes"][sel]
+            bases.append(weekly_aggregate(gf, hows))
+            daily_margin_parts["geracao_total"] = gf.sum(axis=1, min_count=1)
 
     if "intercambio" in data:
         sel = _filter_present_and_dense(
             data["intercambio"], ["import_mwh", "export_mwh"]
         )
         if sel:
-            bases.append(weekly_aggregate(data["intercambio"][sel], hows))
+            interc = data["intercambio"][sel]
+            bases.append(weekly_aggregate(interc, hows))
+            if "import_mwh" in interc.columns:
+                daily_margin_parts["importacao"] = interc["import_mwh"]
+            if "export_mwh" in interc.columns:
+                daily_margin_parts["exportacao"] = interc["export_mwh"]
 
     if "ena" in data:
         sel = _filter_present_and_dense(data["ena"], ["ena_mwmed"])
@@ -222,6 +230,46 @@ def build_features_weekly(data: Dict[str, pd.DataFrame], cfg: Dict) -> pd.DataFr
     Xw = pd.concat(bases, axis=1).sort_index()
     Xw = Xw.loc[~Xw.index.duplicated(keep="last")]
 
+
+    margin_sum_weekly = None
+    margin_min_weekly = None
+    if daily_margin_parts:
+        daily_margin_df = pd.DataFrame(daily_margin_parts).sort_index()
+        if not daily_margin_df.empty:
+            base = daily_margin_df.get("geracao_total")
+            if base is None:
+                base = pd.Series(dtype=float)
+            imports = daily_margin_df.get("importacao")
+            if imports is None:
+                imports = pd.Series(dtype=float)
+            exports = daily_margin_df.get("exportacao")
+            if exports is None:
+                exports = pd.Series(dtype=float)
+
+            idx = daily_margin_df.index
+            margin_daily = pd.Series(0.0, index=idx, dtype=float)
+            if not base.empty:
+                margin_daily = margin_daily.add(base.astype(float), fill_value=0.0)
+            if not imports.empty:
+                margin_daily = margin_daily.add(imports.astype(float), fill_value=0.0)
+            if not exports.empty:
+                margin_daily = margin_daily.sub(exports.astype(float), fill_value=0.0)
+
+            coverage = pd.DataFrame(
+                {
+                    "base": base.reindex(idx),
+                    "imports": imports.reindex(idx),
+                    "exports": exports.reindex(idx),
+                }
+            )
+            valid_mask = coverage.notna().any(axis=1)
+            margin_daily = margin_daily.where(valid_mask)
+            margin_daily = margin_daily.dropna()
+            if not margin_daily.empty:
+                margin_daily = margin_daily.sort_index()
+                margin_sum_weekly = margin_daily.resample("W").sum()
+                margin_min_weekly = margin_daily.resample("W").min()
+
     def pick(prefix: str):
         return [c for c in Xw.columns if c.startswith(prefix)]
 
@@ -245,17 +293,35 @@ def build_features_weekly(data: Dict[str, pd.DataFrame], cfg: Dict) -> pd.DataFr
         Xw["export_total_mwh_sum_w"] = Xw[
             [c for c in exp_cols if c.endswith("_sum_w")]
         ].sum(axis=1)
+
     if {
         "geracao_total_mwh_sum_w",
         "import_total_mwh_sum_w",
         "export_total_mwh_sum_w",
     } <= set(Xw.columns):
-        Xw["margem_suprimento_w"] = (
+        fallback_margin = (
             Xw["geracao_total_mwh_sum_w"]
             + Xw["import_total_mwh_sum_w"]
             - Xw["export_total_mwh_sum_w"]
         )
-        Xw["margem_suprimento_min_w"] = Xw["margem_suprimento_w"]
+        if margin_sum_weekly is not None:
+            aligned_sum = margin_sum_weekly.reindex(Xw.index)
+            Xw["margem_suprimento_w"] = aligned_sum.fillna(fallback_margin)
+        else:
+            Xw["margem_suprimento_w"] = fallback_margin
+
+        if margin_min_weekly is not None:
+            aligned_min = margin_min_weekly.reindex(Xw.index)
+            Xw["margem_suprimento_min_w"] = aligned_min.fillna(
+                Xw["margem_suprimento_w"]
+            )
+        elif "margem_suprimento_min_w" in Xw.columns:
+            Xw["margem_suprimento_min_w"] = Xw["margem_suprimento_min_w"].fillna(
+                Xw["margem_suprimento_w"]
+            )
+        else:
+            Xw["margem_suprimento_min_w"] = Xw["margem_suprimento_w"]
+
         Xw["saldo_importador_mwh_sum_w"] = (
             Xw["import_total_mwh_sum_w"] - Xw["export_total_mwh_sum_w"]
         )
