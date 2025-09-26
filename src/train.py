@@ -4,7 +4,7 @@ import json
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, Optional, Tuple, List
+from typing import Any, Dict, Iterable, Optional, Tuple, List
 
 import numpy as np
 import pandas as pd
@@ -65,7 +65,7 @@ def _pick_margin_column(cfg: Dict) -> str:
     return col or "margem_suprimento_min_w"  # fallback
 
 
-def compute_label_thresholds(cfg: Dict, ref_df: pd.DataFrame) -> Dict[str, float]:
+def compute_label_thresholds(cfg: Dict, ref_df: pd.DataFrame) -> Dict[str, Any]:
     """
     Calcula os thresholds (quantis) a partir de um DataFrame de referência (sem oversample).
     Assumimos: valores MENORES de margem => MAIOR risco.
@@ -91,7 +91,7 @@ def compute_label_thresholds(cfg: Dict, ref_df: pd.DataFrame) -> Dict[str, float
     if not (t_low <= t_med):  # segurança contra distribuições patológicas
         t_low, t_med = sorted([t_low, t_med])
 
-    return {
+    thresholds = {
         "t_low": t_low,
         "t_med": t_med,
         "col": col_margem,
@@ -99,9 +99,174 @@ def compute_label_thresholds(cfg: Dict, ref_df: pd.DataFrame) -> Dict[str, float
         "q_medio": q_medio,
     }
 
+    if bool(rules.get("usar_override_hidro", False)):
+        hydro_cfg: Dict[str, Any] = {
+            "usar_override_hidro": True,
+            "janelas_consecutivas_ena": int(rules.get("janelas_consecutivas_ena", 1)),
+        }
+        ear_col = rules.get("coluna_ear")
+        if ear_col:
+            hydro_cfg["ear_col"] = ear_col
+            hydro_cfg["ear_q_baixo"] = float(rules.get("ear_q_baixo", 0.2))
+            if ear_col in ref_df.columns:
+                ear_series = ref_df[ear_col].dropna().astype(float)
+                if not ear_series.empty:
+                    hydro_cfg["ear_threshold"] = float(
+                        np.nanquantile(ear_series, hydro_cfg["ear_q_baixo"])
+                    )
+                else:
+                    hydro_cfg["ear_threshold"] = None
+                    warnings.warn(
+                        f"[rotulagem] Serie EAR '{ear_col}' vazia; override hidrologico por EAR ignorado."
+                    )
+            else:
+                hydro_cfg["ear_threshold"] = None
+                warnings.warn(
+                    f"[rotulagem] Coluna EAR '{ear_col}' nao encontrada nas features; override hidrologico por EAR ignorado."
+                )
+        ena_col = rules.get("coluna_ena")
+        if ena_col:
+            hydro_cfg["ena_col"] = ena_col
+            hydro_cfg["ena_q_baixo"] = float(rules.get("ena_q_baixo", 0.2))
+            if ena_col in ref_df.columns:
+                ena_series = ref_df[ena_col].dropna().astype(float)
+                if not ena_series.empty:
+                    hydro_cfg["ena_threshold"] = float(
+                        np.nanquantile(ena_series, hydro_cfg["ena_q_baixo"])
+                    )
+                else:
+                    hydro_cfg["ena_threshold"] = None
+                    warnings.warn(
+                        f"[rotulagem] Serie ENA '{ena_col}' vazia; override hidrologico por ENA ignorado."
+                    )
+            else:
+                hydro_cfg["ena_threshold"] = None
+                warnings.warn(
+                    f"[rotulagem] Coluna ENA '{ena_col}' nao encontrada nas features; override hidrologico por ENA ignorado."
+                )
+        thresholds["hydro"] = hydro_cfg
+
+    return thresholds
+
+
+def _apply_label_adjustments(
+    base_labels: pd.Series,
+    Xw: pd.DataFrame,
+    cfg: Dict,
+    thresholds: Dict[str, Any],
+) -> pd.Series:
+    """Aplica ajustes pos-quantis (cortes e hidrologia) nos rotulos base."""
+    if base_labels.empty:
+        return base_labels
+    y_idx = base_labels.map(LABEL_TO_INT).astype(float)
+    y_idx = _apply_curtailment_downgrade(y_idx, Xw, cfg)
+    y_idx = _apply_hydrology_overrides(y_idx, Xw, cfg, thresholds)
+    adjusted = y_idx.astype("Int64").map(INT_TO_LABEL)
+    return adjusted.astype("string")
+
+
+def _apply_curtailment_downgrade(
+    y_idx: pd.Series, Xw: pd.DataFrame, cfg: Dict
+) -> pd.Series:
+    rules = cfg.get("problem", {}).get("label_rules", {}) or {}
+    curtail_cfg = rules.get("curtail_downgrade", {}) or {}
+    if not curtail_cfg.get("usar_downgrade_cortes", False):
+        return y_idx
+
+    ratio_col = "ratio_corte_renovavel_w"
+    if ratio_col not in Xw.columns:
+        return y_idx
+
+    ratio_series = Xw[ratio_col].astype(float)
+    thr = float(curtail_cfg.get("corte_ratio_thr", 0.05))
+    mask = (ratio_series >= thr).fillna(False)
+
+    if curtail_cfg.get("requer_saldo_importador_nao_positivo", False):
+        saldo_col = "saldo_importador_mwh_sum_w"
+        if saldo_col in Xw.columns:
+            saldo_series = Xw[saldo_col].astype(float)
+            mask &= (saldo_series <= 0).fillna(False)
+        else:
+            warnings.warn(
+                "[rotulagem] Flag 'requer_saldo_importador_nao_positivo' ativa, mas coluna 'saldo_importador_mwh_sum_w' ausente; downgrade por cortes ignorado."
+            )
+            mask &= False
+
+    # Filtro opcional para rebaixar apenas de 'medio' para 'baixo'
+    if curtail_cfg.get("rebaixar_apenas_de_medio_para_baixo", False):
+        mask &= y_idx == LABEL_TO_INT["medio"]
+
+    mask &= y_idx.notna()
+
+    if not mask.any():
+        return y_idx
+
+    out = y_idx.copy()
+    out.loc[mask] = (out.loc[mask] - 1).clip(lower=LABEL_TO_INT["baixo"])
+    return out
+
+
+def _apply_hydrology_overrides(
+    y_idx: pd.Series, Xw: pd.DataFrame, cfg: Dict, thresholds: Dict[str, Any]
+) -> pd.Series:
+    rules = cfg.get("problem", {}).get("label_rules", {}) or {}
+    if not rules.get("usar_override_hidro", False):
+        return y_idx
+
+    hydro_cfg = thresholds.get("hydro", {}) or {}
+    mask = pd.Series(False, index=Xw.index, dtype=bool)
+
+    ear_col = hydro_cfg.get("ear_col") or rules.get("coluna_ear")
+    ear_thr = hydro_cfg.get("ear_threshold")
+    if ear_col and ear_thr is not None:
+        if ear_col in Xw.columns:
+            ear_series = Xw[ear_col].astype(float)
+            ear_low = (ear_series <= ear_thr).fillna(False)
+            mask |= ear_low
+        else:
+            warnings.warn(
+                f"[rotulagem] Coluna de EAR '{ear_col}' ausente nas features; override hidrologico ignorado."
+            )
+
+    ena_col = hydro_cfg.get("ena_col") or rules.get("coluna_ena")
+    ena_thr = hydro_cfg.get("ena_threshold")
+    consec = int(
+        hydro_cfg.get("janelas_consecutivas_ena")
+        if hydro_cfg.get("janelas_consecutivas_ena") is not None
+        else rules.get("janelas_consecutivas_ena", 1)
+    )
+    if consec < 1:
+        consec = 1
+
+    if ena_col and ena_thr is not None:
+        if ena_col in Xw.columns:
+            ena_series = Xw[ena_col].astype(float)
+            ena_low = (ena_series <= ena_thr).fillna(False)
+            if consec <= 1:
+                ena_bad = ena_low
+            else:
+                ena_bad = (
+                    ena_low.astype(int).rolling(window=consec, min_periods=consec).sum()
+                    == consec
+                )
+            mask |= ena_bad.fillna(False)
+        else:
+            warnings.warn(
+                f"[rotulagem] Coluna de ENA '{ena_col}' ausente nas features; override hidrologico ignorado."
+            )
+
+    mask &= y_idx.notna()
+
+    if not mask.any():
+        return y_idx
+
+    out = y_idx.copy()
+    out.loc[mask] = LABEL_TO_INT["alto"]
+    return out
+
 
 def rotular_semana_com_thresholds(
-    Xw: pd.DataFrame, cfg: Dict, thresholds: Dict[str, float]
+    Xw: pd.DataFrame, cfg: Dict, thresholds: Dict[str, Any]
 ) -> pd.Series:
     """
     Aplica rótulos fixos ('baixo'|'medio'|'alto') com base em thresholds pré-calculados.
@@ -119,6 +284,8 @@ def rotular_semana_com_thresholds(
     y.loc[x <= t_low] = "alto"
     y.loc[(x > t_low) & (x <= t_med)] = "medio"
     y.loc[x > t_med] = "baixo"
+
+    y = _apply_label_adjustments(y, Xw, cfg, thresholds)
     return y
 
 
@@ -332,7 +499,7 @@ def _train_one_model(
     paths: Paths,
     X_trainval_base: pd.DataFrame,
     X_holdout: pd.DataFrame,
-    thresholds: Dict[str, float],
+    thresholds: Dict[str, Any],
     y_base: pd.Series,
     y_hold: pd.Series,
 ) -> Tuple[str, float, float]:

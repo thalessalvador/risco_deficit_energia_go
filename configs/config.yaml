@@ -13,7 +13,7 @@ seed: 42
 # ======================================================================
 paths:
   raw_dir: data/raw
-  proc_dir: data/processed
+#  proc_dir: data/processed
   features_dir: data/features
   models_dir: models
   reports_dir: reports
@@ -56,18 +56,19 @@ regions:
 #   * usar_regras_duras / reserva_operativa_frac / ens/lolp: regras extra
 # ======================================================================
 problem:
-  horizon: weekly
-  target_name: classe_risco
+#  horizon: weekly
+#  target_name: classe_risco
   forecast_horizon_weeks: 1
   label_rules:
     coluna_margem: margem_vs_carga_w
     q_baixo: 0.05
     q_medio: 0.2
 
-    # --- Rebaixamento por cortes (eólica/FV) --------------------------
+  # --- Rebaixamento por cortes (eólica/FV) --------------------------
     curtail_downgrade:
       usar_downgrade_cortes: true
       corte_ratio_thr: 0.05                       # fração do total para acionar rebaixamento
+      rebaixar_apenas_de_medio_para_baixo: false   # se true, só rebaixa medio->baixo; se false, alto->medio também
       requer_saldo_importador_nao_positivo: true  # só rebaixa se não estiver 'comprando' do SIN
 
     # --- Overrides hidrológicos ---------------------------------------
@@ -78,11 +79,12 @@ problem:
     ena_q_baixo: 0.2                              # quantil que aciona endurecimento por ENA
     janelas_consecutivas_ena: 2                   # exige N semanas ruins seguidas para valer
 
-    # --- Regras duras (margem operacional / ENS / LOLP) ---------------
-    usar_regras_duras: true
-    reserva_operativa_frac: 0.05                  # reserva operacional mínima como fração da carga
-    ens_ratio_thr: 0.05                           # ENS/Carga acima disso endurece classe
-    lolp_thr: 0.05                                # prob. de perda de carga acima disso endurece
+
+    # # --- Regras duras (margem operacional / ENS / LOLP) ---------------
+    # usar_regras_duras: true
+    # reserva_operativa_frac: 0.05                  # reserva operacional mínima como fração da carga
+    # ens_ratio_thr: 0.05                           # ENS/Carga acima disso endurece classe
+    # lolp_thr: 0.05                                # prob. de perda de carga acima disso endurece
 
 # ======================================================================
 # Engenharia de atributos semanais
@@ -125,9 +127,9 @@ modeling:
   holdout_fraction: 0.2
 
   # Métricas que serão reportadas pós-CV
-  metrics:
-  - f1_macro
-  - balanced_accuracy
+  # metrics:
+  # - f1_macro
+  # - balanced_accuracy
 
   # Validação cruzada temporal
   cv:
@@ -149,23 +151,23 @@ modeling:
       class_weight: balanced
       max_iter: 1000
       n_jobs: -1
-    tuning:
-      use: true
-      method: grid
-      cv_splits: 3
-      refit: f1_macro
-      scoring:
-      - f1_macro
-      - balanced_accuracy
-      param_grid:
-        C:
-        - 0.1
-        - 0.5
-        - 1.0
-        - 2.0
-        - 5.0
-        solver:
-        - lbfgs
+    # tuning:
+    #   use: true
+    #   method: grid
+    #   cv_splits: 3
+    #   refit: f1_macro
+    #   scoring:
+    #   - f1_macro
+    #   - balanced_accuracy
+    #   param_grid:
+    #     C:
+    #     - 0.1
+    #     - 0.5
+    #     - 1.0
+    #     - 2.0
+    #     - 5.0
+    #     solver:
+    #     - lbfgs
 
   - name: xgb
     type: xgboost
@@ -211,10 +213,10 @@ modeling:
   # Pesos adicionais por rótulo (aplicados como sample_weight no fit)
   # - útil p/ reforçar a classe 'medio' sem mexer na regra de rótulos
   # --------------------------------------------------------------------
-  class_weight_adjustments:
-    baixo: 1.0
-    medio: 1.0
-    alto: 1.0
+  # class_weight_adjustments:
+  #   baixo: 1.0
+  #   medio: 1.0
+  #   alto: 1.0
 
   # --------------------------------------------------------------------
   # Oversampling da classe minoritária no TREINO (nunca no holdout)
@@ -230,5 +232,5 @@ modeling:
 # ======================================================================
 # Quantidade de features top-k (se houver seleção/relato no pipeline)
 # ======================================================================
-output:
-  top_k_features: 25
+# output:
+#   top_k_features: 25
