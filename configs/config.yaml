@@ -169,6 +169,9 @@ modeling:
         - 5.0
         solver:
         - lbfgs
+        - saga
+        - liblinear
+        - newton-cg
 
   - name: xgb
     type: xgboost
@@ -190,21 +193,21 @@ modeling:
       - balanced_accuracy
       param_grid:
         n_estimators:
-        - 200
         - 300
         - 500
+        - 700
         learning_rate:
+        - 0.01
         - 0.03
-        - 0.06
-        - 0.1
+        - 0.05
         max_depth:
+        - 2
         - 3
         - 5
-        - 6
         subsample:
-        - 0.6
         - 0.8
         - 1.0
+        - 1.2
         colsample_bytree:
         - 0.6
         - 0.8
