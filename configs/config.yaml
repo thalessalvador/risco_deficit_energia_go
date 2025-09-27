@@ -81,11 +81,11 @@ problem:
     janelas_consecutivas_ena: 2                   # exige N semanas ruins seguidas para valer
 
 
-    # # --- Regras duras (margem operacional / ENS / LOLP) ---------------
-    # usar_regras_duras: true
-    # reserva_operativa_frac: 0.05                  # reserva operacional mínima como fração da carga
-    # ens_ratio_thr: 0.05                           # ENS/Carga acima disso endurece classe
-    # lolp_thr: 0.05                                # prob. de perda de carga acima disso endurece
+    # --- Regras duras (margem operacional / ENS / LOLP) ---------------
+    usar_regras_duras: true
+    reserva_operativa_frac: 0.05                  # reserva operacional mínima como fração da carga
+    ens_ratio_thr: 0.05                           # ENS/Carga acima disso endurece classe
+    lolp_thr: 0.05                                # prob. de perda de carga acima disso endurece
 
 # ======================================================================
 # Engenharia de atributos semanais

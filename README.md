@@ -222,9 +222,9 @@ python main.py eval --model xgb
 
 - `problem.horizon`: **weekly** (semanal).  
 - `problem.label_rules`:
-  - `coluna_margem`: **margem_suprimento_min_w** (proxy da margem semanal).
+  - `coluna_margem`: **margem_vs_carga_w** (saldo suprimento - carga da semana).
   - `q_baixo`/`q_medio`: definem os **quantis** para rotular **alto/médio/baixo**.
-  - **Ajustes por cortes**: cortes eólico/FV **diminuem** o risco quando indicam **superávit renovável** (razão de corte semanal acima do limiar **e** sem importação líquida).
+  - **Ajustes por cortes**: cortes eólico/FV **reduzem** o risco quando indicam **superávit renovável** (razão de corte semanal acima do limiar **e** sem importação líquida).
   - **Ajustes por hidrologia**: **EAR** muito baixa **ou** **ENA** muito baixa por `k` semanas -> **alto**.
 - `aggregation.features`: agregações de **diário->semanal**, **lags** e **janelas móveis**.
   - `features.min_nonnull_ratio`: descarta colunas diárias com menos de X% de preenchimento (padrão 50%) antes de gerar features.

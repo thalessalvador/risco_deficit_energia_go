@@ -265,6 +265,86 @@ def _apply_hydrology_overrides(
     return out
 
 
+
+
+def _apply_hard_rules(
+    y_idx: pd.Series, Xw: pd.DataFrame, cfg: Dict
+) -> pd.Series:
+    rules = cfg.get("problem", {}).get("label_rules", {}) or {}
+    if not rules.get("usar_regras_duras", False):
+        return y_idx
+
+    mask = pd.Series(False, index=y_idx.index, dtype=bool)
+
+    rm_frac = rules.get("reserva_operativa_frac")
+    if rm_frac is not None:
+        try:
+            rm_frac = float(rm_frac)
+        except Exception:
+            rm_frac = None
+    ens_thr = rules.get("ens_ratio_thr")
+    if ens_thr is not None:
+        try:
+            ens_thr = float(ens_thr)
+        except Exception:
+            ens_thr = None
+    lolp_thr = rules.get("lolp_thr")
+    if lolp_thr is not None:
+        try:
+            lolp_thr = float(lolp_thr)
+        except Exception:
+            lolp_thr = None
+
+    if rm_frac is not None:
+        col = "reserve_margin_ratio_w"
+        if col in Xw.columns:
+            bad = (Xw[col].astype(float) < rm_frac).fillna(False)
+            mask |= bad
+        else:
+            warnings.warn(
+                f"[rotulagem] Coluna '{col}' ausente; regra dura de reserva operativa ignorada."
+            )
+
+    if ens_thr is not None:
+        col = "ens_week_ratio"
+        if col in Xw.columns:
+            bad = (Xw[col].astype(float) >= ens_thr).fillna(False)
+            mask |= bad
+        else:
+            warnings.warn(
+                f"[rotulagem] Coluna '{col}' ausente; regra dura de ENS ignorada."
+            )
+
+    if lolp_thr is not None:
+        col = "lolp_52w"
+        if col in Xw.columns:
+            bad = (Xw[col].astype(float) >= lolp_thr).fillna(False)
+            mask |= bad
+        else:
+            warnings.warn(
+                f"[rotulagem] Coluna '{col}' ausente; regra dura de LOLP ignorada."
+            )
+
+    mask &= y_idx.notna()
+    if not mask.any():
+        return y_idx
+
+    out = y_idx.copy()
+    out.loc[mask] = LABEL_TO_INT["alto"]
+    return out
+
+
+def _postprocess_with_hard_rules(
+    y_labels: pd.Series, Xw: pd.DataFrame, cfg: Dict
+) -> pd.Series:
+    rules = cfg.get("problem", {}).get("label_rules", {}) or {}
+    if not rules.get("usar_regras_duras", False):
+        return y_labels
+
+    y_idx = y_labels.map(LABEL_TO_INT).astype(float)
+    y_idx = _apply_hard_rules(y_idx, Xw, cfg)
+    return y_idx.astype("Int64").map(INT_TO_LABEL).astype("string")
+
 def rotular_semana_com_thresholds(
     Xw: pd.DataFrame, cfg: Dict, thresholds: Dict[str, Any]
 ) -> pd.Series:
@@ -558,6 +638,7 @@ def _train_one_model(
         # Predição e normalização
         y_pred_raw = est.predict(Xte)
         y_pred = _normalize_pred_to_domain(y_pred_raw, est)
+        y_pred = _postprocess_with_hard_rules(y_pred, Xte, cfg)
 
         # Remover quaisquer predições fora do domínio/NaN
         mask_ok = y_pred.isin(LABELS)
