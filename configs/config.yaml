@@ -152,23 +152,23 @@ modeling:
       class_weight: balanced
       max_iter: 1000
       n_jobs: -1
-    # tuning:
-    #   use: true
-    #   method: grid
-    #   cv_splits: 3
-    #   refit: f1_macro
-    #   scoring:
-    #   - f1_macro
-    #   - balanced_accuracy
-    #   param_grid:
-    #     C:
-    #     - 0.1
-    #     - 0.5
-    #     - 1.0
-    #     - 2.0
-    #     - 5.0
-    #     solver:
-    #     - lbfgs
+    tuning:
+      use: true
+      method: grid
+      cv_splits: 3
+      refit: f1_macro
+      scoring:
+      - f1_macro
+      - balanced_accuracy
+      param_grid:
+        C:
+        - 0.1
+        - 0.5
+        - 1.0
+        - 2.0
+        - 5.0
+        solver:
+        - lbfgs
 
   - name: xgb
     type: xgboost
@@ -211,15 +211,6 @@ modeling:
         - 1.0
 
   # --------------------------------------------------------------------
-  # Pesos adicionais por rótulo (aplicados como sample_weight no fit)
-  # - útil p/ reforçar a classe 'medio' sem mexer na regra de rótulos
-  # --------------------------------------------------------------------
-  # class_weight_adjustments:
-  #   baixo: 1.0
-  #   medio: 1.0
-  #   alto: 1.0
-
-  # --------------------------------------------------------------------
   # Oversampling da classe minoritária no TREINO (nunca no holdout)
   # - use: ativa o oversample
   # - min_fraction: piso alvo por classe (ex.: 0.33 => ≥33%)
@@ -231,7 +222,7 @@ modeling:
     random_state: 42
 
 # ======================================================================
-# Quantidade de features top-k (se houver seleção/relato no pipeline)
+# Quantidade de features top-k (A implementar - se houver seleção/relato no pipeline)
 # ======================================================================
 # output:
 #   top_k_features: 25
