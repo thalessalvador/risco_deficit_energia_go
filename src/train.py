@@ -12,8 +12,9 @@ import yaml
 from joblib import dump
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import balanced_accuracy_score, f1_score
-from sklearn.model_selection import TimeSeriesSplit
+from sklearn.model_selection import TimeSeriesSplit, GridSearchCV
 from sklearn.pipeline import Pipeline
+from sklearn.base import clone
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
 
@@ -345,6 +346,95 @@ def _postprocess_with_hard_rules(
     y_idx = _apply_hard_rules(y_idx, Xw, cfg)
     return y_idx.astype("Int64").map(INT_TO_LABEL).astype("string")
 
+
+def _maybe_tune_estimator(
+    base_estimator,
+    model_cfg: Dict,
+    model_name: str,
+    X: pd.DataFrame,
+    y: pd.Series,
+) -> Tuple[Pipeline, Optional[Dict[str, Any]]]:
+    tuning_cfg = (model_cfg.get("tuning") or {})
+    if not tuning_cfg.get("use"):
+        return base_estimator, None
+
+    param_grid = tuning_cfg.get("param_grid") or {}
+    if not param_grid:
+        return base_estimator, None
+
+    mask = y.notna()
+    if not mask.any():
+        warnings.warn(
+            f"[tuning:{model_name}] Nenhum rotulo disponivel; pulando GridSearchCV."
+        )
+        return base_estimator, None
+
+    X_fit = X.loc[mask]
+    y_fit = encode_labels(y.loc[mask])
+
+    step_name = None
+    if isinstance(base_estimator, Pipeline):
+        step_name = base_estimator.steps[-1][0]
+
+    def _map_param(param_name: str) -> str:
+        if step_name:
+            return f"base_estimator__{step_name}__{param_name}"
+        return f"base_estimator__{param_name}"
+
+    mapped_grid = {_map_param(k): v for k, v in param_grid.items()}
+
+    scoring_cfg = tuning_cfg.get("scoring") or ["f1_macro"]
+    if isinstance(scoring_cfg, (str, bytes)):
+        scoring_list = [scoring_cfg]
+    else:
+        scoring_list = list(scoring_cfg)
+
+    if len(scoring_list) == 1:
+        scoring_arg = scoring_list[0]
+        refit = tuning_cfg.get("refit", True)
+    else:
+        scoring_arg = scoring_list
+        refit = tuning_cfg.get("refit") or scoring_list[0]
+
+    cv_splits = int(tuning_cfg.get("cv_splits", 3))
+    inner_cv = TimeSeriesSplit(n_splits=cv_splits)
+
+    grid_estimator = ContiguousLabelClassifier(
+        base_estimator=clone(base_estimator),
+        fallback_strategy="most_frequent",
+    )
+
+    grid = GridSearchCV(
+        estimator=grid_estimator,
+        param_grid=mapped_grid,
+        scoring=scoring_arg,
+        refit=refit,
+        cv=inner_cv,
+        n_jobs=tuning_cfg.get("n_jobs", None),
+        verbose=int(tuning_cfg.get("verbose", 0)),
+    )
+
+    try:
+        grid.fit(X_fit, y_fit)
+    except Exception as exc:
+        warnings.warn(f"[tuning:{model_name}] Falha no GridSearchCV: {exc}.")
+        return base_estimator, None
+
+    best_params = grid.best_params_
+    prefix_parts = ["base_estimator__"]
+    if step_name:
+        prefix_parts.append(f"{step_name}__")
+    prefix = "".join(prefix_parts)
+    pretty_params = {
+        key[len(prefix):] if key.startswith(prefix) else key: value
+        for key, value in best_params.items()
+    }
+    print(f"[tuning:{model_name}] melhores parametros: {pretty_params}")
+
+    best_base = clone(grid.best_estimator_.base_estimator)
+    return best_base, pretty_params
+
+
 def rotular_semana_com_thresholds(
     Xw: pd.DataFrame, cfg: Dict, thresholds: Dict[str, Any]
 ) -> pd.Series:
@@ -461,7 +551,6 @@ def _make_estimator(model_cfg: Dict):
             C=params.get("C", 1.0),
             max_iter=params.get("max_iter", 500),
             solver=params.get("solver", "saga"),
-            multi_class=params.get("multi_class", "auto"),
             class_weight=params.get("class_weight", "balanced"),
             n_jobs=params.get("n_jobs", None),
         )
@@ -477,7 +566,7 @@ def _make_estimator(model_cfg: Dict):
     if mtype in ("xgboost", "xgb"):
         if not _HAS_XGB:
             warnings.warn(
-                "[train] xgboost não instalado; caindo para LogisticRegression."
+                "[train] xgboost nao instalado; caindo para LogisticRegression."
             )
             # reaproveita o caminho da logreg (com scaler, que não atrapalha)
             return _make_estimator({"type": "logistic_regression", "params": params})
@@ -598,6 +687,22 @@ def _train_one_model(
 
     # Estimador (pipeline com imputer e, se logreg, scaler)
     base_estimator = _make_estimator(model_cfg)
+    base_estimator, tuned_params = _maybe_tune_estimator(
+        base_estimator=base_estimator,
+        model_cfg=model_cfg,
+        model_name=model_name,
+        X=X_trainval_base,
+        y=y_base,
+    )
+    params_path = Path(paths.reports_dir) / f"tuning_{model_name}.json"
+    params_path.parent.mkdir(parents=True, exist_ok=True)
+    if tuned_params:
+        with open(params_path, "w", encoding="utf-8") as f:
+            json.dump(tuned_params, f, ensure_ascii=False, indent=2)
+    else:
+        if params_path.exists():
+            params_path.unlink()
+
     est = ContiguousLabelClassifier(
         base_estimator=base_estimator, fallback_strategy="most_frequent"
     )
@@ -772,7 +877,7 @@ def main(
     y_base = rotular_semana_com_thresholds(train_val_base, cfg, thresholds)
     y_hold = rotular_semana_com_thresholds(holdout, cfg, thresholds)
 
-    # Log das distribuições base/holdout
+    # Log das distribuicoes base/holdout
     def _dist(s: pd.Series) -> Dict[str, str]:
         s = s.dropna()
         cnt = s.value_counts().reindex(LABELS).fillna(0).astype(int)
@@ -780,8 +885,8 @@ def main(
         pct = (cnt / max(total, 1) * 100.0).round(2)
         return {k: f"{int(cnt[k])} ({pct[k]}%)" for k in LABELS}
 
-    print("[train] Distribuição (train_val_base):", _dist(y_base))
-    print("[train] Distribuição (holdout):      ", _dist(y_hold))
+    print("[train] Distribuicao (train_val_base):", _dist(y_base))
+    print("[train] Distribuicao (holdout):      ", _dist(y_hold))
 
     # -------------------- Quais modelos treinar? -------------
     models_cfg: List[Dict] = cfg.get("modeling", {}).get("models", [])
@@ -825,7 +930,7 @@ def main(
 
     # -------------------- Tabela consolidada -----------------
     metrics_df = pd.DataFrame(all_rows)
-    print("\n=== Métricas CV consolidadas ===")
+    print("\n=== Metricas CV consolidadas ===")
     with pd.option_context("display.max_columns", None, "display.width", 120):
         print(
             metrics_df.sort_values(by="f1_macro", ascending=False).to_string(
