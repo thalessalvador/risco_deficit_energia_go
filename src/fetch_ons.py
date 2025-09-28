@@ -80,12 +80,22 @@ def _pick_resource(
 
 
 class CkanClient:
+    """Cliente simplificado para interagir com a API CKAN do dados.ons.org.br."""
+
     def __init__(self, base: str = CKAN_BASE, timeout: int = 60):
         self.base = base.rstrip("/")
         self.timeout = timeout
 
     def _get(self, path: str, params: Optional[dict] = None) -> dict:
-        """Executa GET no endpoint CKAN e retorna o campo `result`."""
+        """Executa uma chamada GET para um endpoint da API CKAN.
+
+        Args:
+            path (str): O caminho do endpoint (ex: 'package_search').
+            params (dict, optional): Parâmetros de query para a requisição.
+
+        Returns:
+            dict: O conteúdo do campo 'result' da resposta JSON.
+        """
         import requests
 
         url = f"{self.base}/{path.lstrip('/')}"
@@ -97,12 +107,27 @@ class CkanClient:
         return j["result"]
 
     def search_package(self, query: str, rows: int = 10) -> List[dict]:
-        """Busca pacotes por texto livre."""
+        """Busca por pacotes (datasets) no CKAN usando um texto de busca.
+
+        Args:
+            query (str): Texto para buscar nos títulos e descrições dos pacotes.
+            rows (int): Número máximo de resultados a retornar.
+
+        Returns:
+            list[dict]: Uma lista de dicionários, cada um representando um pacote.
+        """
         res = self._get("package_search", {"q": query, "rows": rows})
         return res.get("results", [])
 
     def show_package(self, package_id: str) -> dict:
-        """Obtém metadados completos de um pacote por id."""
+        """Obtém os metadados completos de um pacote específico pelo seu ID ou slug.
+
+        Args:
+            package_id (str): O ID ou nome (slug) do pacote.
+
+        Returns:
+            dict: Um dicionário com os detalhes completos do pacote.
+        """
         return self._get("package_show", {"id": package_id})
 
 
@@ -171,6 +196,15 @@ DEFAULT_SPECS: Dict[str, DatasetSpec] = {
 
 
 def _parse_since_to_date(since: Optional[str]) -> Optional[str]:
+    """Converte um ano ou ano-mês em uma string de data completa.
+
+    Args:
+        since (str | None): String no formato 'YYYY' ou 'YYYY-MM'.
+
+    Returns:
+        str | None: String de data no formato 'YYYY-MM-DD' ou None se a entrada
+            for inválida.
+    """
     if not since:
         return None
     try:
@@ -195,6 +229,18 @@ def fetch_carga_api(
     """Baixa Carga Verificada via API oficial (apicarga.ons.org.br) e consolida em ons_carga.csv.
 
     A API limita a janelas de ~3 meses; esta função itera em janelas e concatena o resultado.
+
+    Args:
+        out_dir (Path): Diretório onde o arquivo `ons_carga.csv` será salvo.
+        since (str, optional): Data de início no formato 'YYYY' ou 'YYYY-MM'.
+            Padrão é o início do mês atual.
+        until (str, optional): Data de fim no formato 'YYYY-MM-DD'. Padrão é hoje.
+        area (str): Código da área de carga (ex: "SECO", "NE").
+        overwrite (bool): Se True, força o re-download mesmo que o arquivo já exista.
+        verbose (bool): Se True, imprime o progresso do download.
+
+    Returns:
+        Path | None: O caminho para o arquivo CSV consolidado ou None se falhar.
     """
     import requests
 
@@ -282,11 +328,18 @@ def fetch_carga_api(
 
 
 def _download_resource(url: str, out_path: Path) -> Path:
-    """Baixa um recurso (CSV/XLSX/ZIP) de forma robusta e retorna o caminho local.
+    """Baixa um recurso de uma URL e o salva localmente.
 
-    - Faz download em streaming para não estourar memória em arquivos grandes.
-    - Se for ZIP, extrai o maior CSV/XLSX contido e retorna o caminho extraído.
-    - Caso contrário, retorna o caminho do arquivo baixado (pode ser .csv ou .xlsx).
+    A função lida com arquivos grandes fazendo download em streaming. Se o arquivo
+    for um ZIP, ela extrai o maior arquivo de dados (CSV/XLSX) contido nele.
+
+    Args:
+        url (str): A URL do recurso a ser baixado.
+        out_path (Path): O caminho temporário para salvar o arquivo baixado.
+
+    Returns:
+        Path: O caminho para o arquivo final (extraído, se for ZIP, ou o próprio
+            arquivo baixado).
     """
     import requests
 
@@ -337,7 +390,18 @@ def _download_resource(url: str, out_path: Path) -> Path:
 
 
 def _maybe_convert_to_csv(in_path: Path, out_csv: Path) -> Path:
-    """Converte XLS/XLSX para CSV; para ZIPs já extraídos, garante saída .csv."""
+    """Converte um arquivo (XLS, XLSX) para o formato CSV, se necessário.
+
+    Se o arquivo de entrada já for CSV, ele é apenas copiado. Para outros
+    formatos, tenta a conversão.
+
+    Args:
+        in_path (Path): Caminho do arquivo de entrada.
+        out_csv (Path): Caminho do arquivo de saída CSV.
+
+    Returns:
+        Path: O caminho do arquivo CSV resultante.
+    """
     ext = in_path.suffix.lower()
     if ext == ".csv":
         if in_path != out_csv:
@@ -367,7 +431,12 @@ def _maybe_convert_to_csv(in_path: Path, out_csv: Path) -> Path:
 def _normalize_csv(in_csv: Path, out_csv: Path) -> Path:
     """Normaliza um CSV detectando separador e regravando com vírgula e header.
 
-    Retorna o caminho de saída ou o arquivo original em caso de falha.
+    Tenta ler um CSV com separador automático e o reescreve usando vírgula
+    como separador padrão.
+
+    Args:
+        in_csv (Path): Caminho do CSV de entrada.
+        out_csv (Path): Caminho para salvar o CSV normalizado.
     """
     try:
         df = pd.read_csv(in_csv, sep=None, engine="python")
@@ -381,6 +450,11 @@ def _append_csv_files(sources: List[Path], target: Path) -> Path:
     """Concatena múltiplos CSVs (mesmo schema) em um único arquivo `target`.
 
     Faz append em disco para evitar alto uso de memória.
+
+    Args:
+        sources (list[Path]): Lista de caminhos para os arquivos CSV de origem.
+        target (Path): Caminho do arquivo CSV de destino.
+
     """
     if not sources:
         raise ValueError("Nenhuma fonte para concatenar")
@@ -397,6 +471,18 @@ def _append_csv_files(sources: List[Path], target: Path) -> Path:
 
 
 def _parse_iso_dt(s: Optional[str]) -> Optional[datetime]:
+    """Converte uma string de data (formato ISO) em um objeto datetime.
+
+    Tenta múltiplos formatos comuns (com/sem hora, com/sem microssegundos) e
+    remove o sufixo 'Z' (UTC) antes de converter. É robusta a falhas,
+    retornando None se nenhum formato for compatível.
+
+    Args:
+      s (str | None): String de data a ser convertida.
+
+    Returns:
+      datetime | None: Objeto datetime convertido ou None em caso de falha.
+    """
     if not s:
         return None
     for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
@@ -410,7 +496,11 @@ def _parse_iso_dt(s: Optional[str]) -> Optional[datetime]:
 def _extract_period_ym_from_resource(r: dict) -> Optional[Tuple[int, Optional[int]]]:
     """Extrai (ano, mes?) do recurso a partir do nome/descrição/URL ou metadados.
 
-    Retorna (YYYY, MM|None) ou None se não conseguir inferir.
+    Args:
+        r (dict): Dicionário de metadados do recurso.
+
+    Returns:
+        (ano, mês) ou None: Uma tupla (YYYY, MM) ou (YYYY, None) se o período for inferido, senão None.
     """
     key = _period_key_from_resource(r)
     m = re.match(r"^(\d{4})(?:-(\d{2}))?$", key)
@@ -424,6 +514,20 @@ def _extract_period_ym_from_resource(r: dict) -> Optional[Tuple[int, Optional[in
 def _parse_since_until(
     since: Optional[str], until: Optional[str]
 ) -> Tuple[Optional[Tuple[int, Optional[int]]], Optional[Tuple[int, Optional[int]]]]:
+    """Analisa as strings 'since' e 'until' em tuplas (ano, mês).
+
+    A função lida com os formatos 'YYYY' e 'YYYY-MM'. Se o mês não for
+    fornecido, ele será None na tupla de saída.
+
+    Args:
+      since (str | None): String da data de início (ex: '2022', '2022-01').
+      until (str | None): String da data de fim (ex: '2023', '2023-12').
+
+    Returns:
+      Uma tupla contendo duas tuplas: (since_parsed, until_parsed), onde cada
+      uma é (ano, mês | None) ou None se a string de entrada for inválida.
+    """
+
     def _p(val: Optional[str]) -> Optional[Tuple[int, Optional[int]]]:
         if not val:
             return None
@@ -446,6 +550,12 @@ def _resource_matches_since_until(
     - Primeiro tenta inferir período do recurso (YYYY[-MM]) pelo nome/URL.
     - Se conseguir, compara com since/until parseados como YYYY[-MM].
     - Se não conseguir, cai no filtro simplificado por substring no nome/descrição.
+
+    Args:
+        r (dict): Metadados do recurso.
+        since (str | None): Data de início do filtro ('YYYY' ou 'YYYY-MM').
+        until (str | None): Data de fim do filtro ('YYYY' ou 'YYYY-MM').
+
     """
     if not since and not until:
         return True
@@ -479,6 +589,17 @@ def _resource_matches_since_until(
 def _list_resources(
     client: CkanClient, query: str, resource_filter: Optional[str], verbose: bool
 ) -> Tuple[dict, List[dict]]:
+    """Busca o pacote mais relevante para uma query e lista seus recursos.
+
+    Args:
+        client (CkanClient): Instância do cliente CKAN.
+        query (str): Texto de busca para o pacote.
+        resource_filter (str | None): Regex para filtrar recursos dentro do pacote.
+        verbose (bool): Se True, imprime logs.
+
+    Returns:
+        (pacote, recursos): Uma tupla com os metadados do pacote escolhido e a lista de seus recursos.
+    """
     pkgs = client.search_package(query, rows=50)
     if not pkgs:
         if verbose:
@@ -531,6 +652,15 @@ def _list_resources(
 def _pref_index(
     fmt: Optional[str], prefer: Tuple[str, ...] = ("CSV", "XLSX", "ZIP")
 ) -> int:
+    """Retorna o índice de preferência de um formato de arquivo.
+
+    Args:
+        fmt (str | None): O formato do arquivo (ex: 'CSV').
+        prefer (tuple[str, ...]): Uma tupla com a ordem de formatos preferidos.
+
+    Returns:
+        int: O índice do formato na lista de preferência. Formatos não listados recebem um índice alto.
+    """
     f = (fmt or "").upper()
     try:
         return prefer.index(f)
@@ -546,6 +676,9 @@ def _period_key_from_resource(r: dict) -> str:
     """Extrai uma chave de período (YYYY-MM ou YYYY) do nome/descrição/URL do recurso.
 
     Fallback para ano-mês de last_modified/created quando possível.
+
+    Args:
+        r (dict): Metadados do recurso.
     """
     name = (
         (r.get("name") or "")
@@ -570,7 +703,15 @@ def _period_key_from_resource(r: dict) -> str:
 def _group_prefer_by_period(
     resources: List[dict], prefer: Tuple[str, ...] = ("CSV", "XLSX", "ZIP")
 ) -> List[dict]:
-    """Agrupa recursos por período e escolhe o formato preferido em cada grupo."""
+    """Agrupa recursos por período e escolhe o melhor formato para cada período.
+
+    Args:
+        resources (list[dict]): Lista de recursos de um pacote.
+        prefer (tuple[str, ...]): Ordem de preferência de formatos.
+
+    Returns:
+        list[dict]: Uma lista de recursos escolhidos, um para cada período, ordenados cronologicamente.
+    """
     groups: Dict[str, List[dict]] = {}
     for r in resources:
         k = _period_key_from_resource(r)
@@ -595,6 +736,9 @@ def _is_data_resource(r: dict) -> bool:
 
     Exclui PDFs/JSON e nomes que contenham 'dicionario', 'dictionary', 'glossario',
     'metadados', etc.
+
+    Args:
+        r (dict): Metadados do recurso.
     """
     fmt = (r.get("format") or r.get("mimetype") or "").upper()
     url = (r.get("url") or r.get("download_url") or "").lower()
@@ -632,6 +776,9 @@ def fetch_one(
       spec (DatasetSpec): Especificação do dataset.
       out_dir (Path): Diretório de saída.
       verbose (bool): Se True, imprime progresso.
+      since (str, optional): Filtro de data inicial.
+      until (str, optional): Filtro de data final.
+      overwrite (bool): Se True, força o re-download.
 
     Returns:
       Path|None: Caminho para o CSV gerado ou None se não encontrado.
@@ -717,6 +864,15 @@ def fetch_many_and_concat(
 
     Útil para datasets mensais (um recurso por mês). `since`/`until` aceitam
     prefixos no nome do recurso (ex.: "2022-" ou "2022-04").
+
+    Args:
+        client (CkanClient): Instância do cliente CKAN.
+        spec (DatasetSpec): Especificação do dataset a ser baixado.
+        out_dir (Path): Diretório de saída.
+        since (str, optional): Filtro de data inicial.
+        until (str, optional): Filtro de data final.
+        verbose (bool): Se True, imprime logs de progresso.
+        overwrite (bool): Se True, força o re-download e concatenação.
     """
     # Early skip: se consolidado existe e não é overwrite, não baixa de novo
     final = out_dir / spec.out_name
@@ -835,6 +991,9 @@ def fetch_all(
       out_dir (Path): Diretório de saída.
       datasets (list[str]|None): Subconjunto de chaves de `DEFAULT_SPECS`.
       verbose (bool): Se True, imprime progresso.
+      since (str, optional): Filtro de data inicial para todos os datasets.
+      until (str, optional): Filtro de data final para todos os datasets.
+      overwrite (bool): Se True, força o re-download de todos os datasets.
 
     Returns:
       dict[str, Path|None]: Mapa de dataset -> arquivo baixado (ou None).
@@ -891,7 +1050,7 @@ def fetch_all(
 
 
 def main():
-    """CLI para baixar dados do ONS via CKAN em `data/raw`."""
+    """Ponto de entrada da CLI para baixar dados do ONS via CKAN para `data/raw`."""
     ap = argparse.ArgumentParser(
         description="Baixa dados do ONS (CKAN) e salva em data/raw."
     )

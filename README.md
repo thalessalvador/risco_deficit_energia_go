@@ -112,6 +112,8 @@ Expansões temporais (para cada feature semanal base):
 - ONS – Constrained-off (cortes) eólica/FV: indicador de superávit/limitação de escoamento (não é déficit). Usamos a razão semanal `cortes/(cortes+geração)` como sinal para reduzir risco quando não há importação líquida.
 - NASA POWER (diário agregado p/ GO): GHI, temperatura e precipitação (impactos em FV, carga e hidrologia). Coleta leve por API.
 
+NOTA: DEFAULT_SPECS em fech_ons.py define todas as fontes a serem baixadas no ONS. para incluir ou remover alguma, edite esta parte do arquivo.
+
 ### Onde baixar (referência)
 - ONS (manual): baixe CSV/XLSX das páginas de Carga Verificada, Balanço de Energia nos Subsistemas (serve como “Geração por Fonte”), Intercâmbios Entre Subsistemas, ENA Diário por Subsistema, EAR Diário por Subsistema e Constrained‑off (eólica/FV) para o submercado SE/CO.
   - Salve os brutos em `data/raw/` com nomes sugeridos:
@@ -123,6 +125,8 @@ Expansões temporais (para cada feature semanal base):
     - `ons_constrained_off_eolica_mensal.csv` (mensal)
     - `ons_constrained_off_fv_mensal.csv` (mensal)
   - Depois rode o ETL para gerar os diários padronizados usados pelo pipeline (`python main.py data`).
+
+  NOTA: O software já baixa automaticamente. Veja a próxima seção.
 
 ### Automatizando o download e o ETL
 - Tudo de uma vez (ONS + ETL + NASA):
