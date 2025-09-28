@@ -177,8 +177,8 @@ aggregation:
     rolling_weeks:
     - 2
     - 4
-    min_nonnull_ratio: 0.6
-    min_nonnull_ratio_weekly: 0.6
+    min_nonnull_ratio: 0.80  
+    min_nonnull_ratio_weekly: 0.80
 
 # ======================================================================
 # Configuração de modelagem
@@ -190,7 +190,7 @@ aggregation:
 # - oversample: duplicação da classe minoritária no TREINO (nunca no holdout)
 # ======================================================================
 modeling:
-  holdout_fraction: 0.2
+  holdout_fraction: 0.20
 
   # Métricas que serão reportadas pós-CV
   # metrics:
@@ -277,8 +277,24 @@ modeling:
         - 0.6
         - 0.8
         - 1.0
-
+ # --------------------------------------------------------------------
+  # Feature selection antes do oversampling
+  # - use: ativa a seleção de features
+  # - source: arquivo JSON com importâncias (ex.: de um XGB pré-treinado)
+  # - keep_top_k: ex.: 20 para manter as 20 features mais importantes   
+  # - keep_list: ex.: [feature_1, feature_2, feature_3] se desejar manter features específicas, mesmo que não estejam no top_k
+  # - min_importance: ex.: 0.01 para manter features com importância mínima de 1%
   # --------------------------------------------------------------------
+ 
+  feature_selection:
+    use: true  
+    source: reports/feature_importances_xgb.json
+    keep_top_k: 200  
+    keep_list: [] 
+    min_importance: null 
+
+
+ # --------------------------------------------------------------------
   # Oversampling da classe minoritária no TREINO (nunca no holdout)
   # - use: ativa o oversample
   # - min_fraction: piso alvo por classe (ex.: 0.33 => ≥33%)
@@ -289,8 +305,4 @@ modeling:
     min_fraction: 0.33
     random_state: 42
 
-# ======================================================================
-# Quantidade de features top-k (A implementar - se houver seleção/relato no pipeline)
-# ======================================================================
-# output:
-#   top_k_features: 25
+

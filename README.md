@@ -241,6 +241,7 @@ python main.py eval --model xgb
 - `aggregation.features`: agregações de **diário->semanal**, **lags** e **janelas móveis**.
   - `features.min_nonnull_ratio`: descarta colunas diárias com menos de X% de preenchimento (padrão 50%) antes de gerar features.
 - `modeling.models`: especifica **Logistic Regression** e **XGBoost**.
+- `modeling.feature_selection`: permite aplicar filtro nas features usando o JSON de importâncias do XGB final (`use`, `source`, `keep_top_k`, `keep_list`, `min_importance`).
 
 > Você pode ajustar quantis/limiares no YAML sem alterar código.
 
@@ -254,12 +255,29 @@ python main.py eval --model xgb
    - **Cortes** (constrained-off) eólico/FV: **reduzem** o risco quando representam superávit renovável (razão de corte > limiar e sem importação líquida).  
    - **Hidrologia**: **EAR** muito baixa **ou** **ENA** muito baixa por `k` semanas -> **alto**.
 
+## Auditoria de Rotulagem
+
+- `main.py train` exporta `reports/label_audit_train.csv` após calcular os rótulos.
+- O CSV traz rótulos base (quantis), pós-cortes, pós-regras duras e o rótulo final usado no treino.
+- Registra os thresholds adotados (margem, EAR, ENA, razões de corte) e flags indicando qual regra alterou cada semana.
+- Serve para auditoria/QA dos rótulos sem reprocessar os Parquets.
+
 ## Saídas
 
 - `data/features/features_weekly.parquet` — feature store semanal.  
 - `models/*.joblib` — artefatos dos modelos.  
 - `reports/cv_scores.csv` — métricas de CV.  
-- `reports/report_<modelo>.txt` — relatório final + matriz de confusão.
+- `reports/report_<modelo>.txt` — relatório final + matriz de confusão.  
+- `reports/label_audit_train.csv` — auditoria dos rótulos gerados (quantis, regras, thresholds).  
+- `reports/feature_importances_<modelo>.json` — ranking de importância de features do modelo final.
+
+## Selecao de features com XGB
+
+1. Execute `main.py train` com `modeling.feature_selection.use: false` para gerar o ranking completo em `reports/feature_importances_xgb.json`.
+2. Ajuste o bloco `modeling.feature_selection` no YAML apontando para esse JSON (`source`) e defina `keep_top_k`, `keep_list` ou `min_importance` conforme o experimento.
+3. Reative o treino (`use: true`) para treinar apenas com as colunas selecionadas; novas execucoes sobrescrevem o JSON com as importancias do modelo filtrado.
+
+Use `keep_list` para colunas obrigatorias, `keep_top_k` para limitar pelo ranking e `min_importance` como piso numerico. Quando o bloco estiver desativado o pipeline volta a usar todas as features.
 
 ## API (stub para AWS Lambda)
 
