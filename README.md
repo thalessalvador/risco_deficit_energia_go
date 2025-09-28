@@ -94,10 +94,18 @@ As features semanais seguem um padrão configurável em `configs/config.yaml` (a
 | Clima (NASA) | `ghi`, `temp2m_c`, `precipitacao_mm`, `precip_14d_mm`, `precip_30d_mm` | `<col>_<agg>_w` para cada coluna disponível | `precip_14d_mm`/`precip_30d_mm` são construídas no diário e então agregadas |
 
 Derivadas operacionais (semanais):
-- `geracao_total_mwh_sum_w`, `import_total_mwh_sum_w`, `export_total_mwh_sum_w`.
-- `margem_suprimento_w` e `margem_suprimento_min_w` (proxy), `saldo_importador_mwh_sum_w`.
-- Proxies de adequação de energia: `margem_vs_carga_w`, `reserve_margin_ratio_w`, `ens_week_mwh`, `ens_week_ratio`, `lolp_52w`.
-
+- **`geracao_total_mwh_sum_w`**: Soma da geração de todas as fontes (hidro, eólica, FV, térmica) na semana.
+- **`import_total_mwh_sum_w`**: Total de energia importada de outros subsistemas na semana.
+- **`export_total_mwh_sum_w`**: Total de energia exportada para outros subsistemas na semana.
+- **`saldo_importador_mwh_sum_w`**: Saldo líquido de energia (`importações - exportações`). Um valor positivo indica que o subsistema foi um importador líquido na semana.
+- **`margem_suprimento_w`**: Representa a oferta total de energia disponível na semana. É calculada como `geração_total + importações - exportações`.
+- **`margem_suprimento_min_w`**: Proxy da margem de suprimento, atualmente uma cópia da `margem_suprimento_w`.
+- **`margem_vs_carga_w`**: **Feature central para a rotulagem.** É a diferença entre a oferta e a demanda (`margem_suprimento_w - carga_mwh_sum_w`). Um valor negativo indica um déficit de energia na semana.
+- **`reserve_margin_ratio_w`**: Razão da margem de reserva, calculada como `margem_vs_carga_w / carga_mwh_sum_w`. Indica a folga (ou déficit) como uma porcentagem da demanda.
+- **`ens_week_mwh`**: "Energy Not Supplied" (Energia Não Suprida). É uma estimativa do déficit, calculada como o valor negativo da `margem_vs_carga_w` (zerado se a margem for positiva).
+- **`ens_week_ratio`**: Razão do ENS em relação à carga total da semana (`ens_week_mwh / carga_mwh_sum_w`).
+- **`lolp_52w`**: "Loss of Load Probability". É uma probabilidade empírica de perda de carga, calculada como a frequência de semanas com `margem_vs_carga_w` negativa em uma janela móvel de 52 semanas.
+ 
 Expansões temporais (para cada feature semanal base):
 - Lags: sufixos `_<feature>_lag{L}w` para `L` em `[1,2,4]`.
 - Janelas móveis: `_<feature>_r{R}w_mean` e `_<feature>_r{R}w_std` para `R` em `[2,4]`.
