@@ -279,6 +279,8 @@ python main.py eval --model xgb   # ou --model logreg / --model rf
 
 Use `keep_list` para colunas obrigatorias, `keep_top_k` para limitar pelo ranking e `min_importance` como piso numerico. Quando o bloco estiver desativado o pipeline volta a usar todas as features.
 
+> Observacao: sempre que quiser aumentar `keep_top_k`, gere um ranking completo novamente (rodando `main.py train` com `feature_selection.use: false` ou apontando `source` para um JSON cheio). Reduzir o top_k nao exige esse passo.
+
 ## API (stub para AWS Lambda)
 
 Arquivo: `src/api/handler.py`.  
