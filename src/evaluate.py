@@ -61,7 +61,12 @@ def main(config_path="configs/config.yaml", model_name="xgb"):
     X = Xw.loc[idx_ok]
     y = y.loc[idx_ok]
 
-    pred_raw = model.predict(X)
+    feature_subset = getattr(model, "selected_features_", None)
+    X_model = X
+    if feature_subset:
+        X_model = X.reindex(columns=list(feature_subset), fill_value=pd.NA)
+
+    pred_raw = model.predict(X_model)
     pred = _normalize_pred_to_domain(pred_raw, model)
     pred = _postprocess_with_hard_rules(pred, X, cfg)
 
