@@ -217,17 +217,17 @@ python main.py features
 # => salva data/features/features_weekly.parquet
 ```
 
-2) **Treinar modelos (LogReg e XGBoost)**
+2) **Treinar modelos (LogReg, Random Forest, XGBoost)**
 ```bash
 python main.py train
-# => salva models/logreg.joblib e models/xgb.joblib
+# => salva models/logreg.joblib, models/rf.joblib e models/xgb.joblib
 # => gera reports/cv_scores.csv com F1-macro e Balanced Accuracy (TimeSeriesSplit)
 ```
 
 3) **Avaliar e gerar relatorio**
 ```bash
-python main.py eval --model xgb
-# => reports/report_xgb.txt (classification_report + matriz de confusao)
+python main.py eval --model xgb   # ou --model logreg / --model rf
+# => reports/report_<model>.txt (classification_report + matriz de confusao)
 ```
 
 ## Configuracao (configs/config.yaml)
@@ -240,7 +240,7 @@ python main.py eval --model xgb
   - **Ajustes por hidrologia**: **EAR** muito baixa **ou** **ENA** muito baixa por `k` semanas -> **alto**.
 - `aggregation.features`: agregacoes de **diario->semanal**, **lags** e **janelas moveis**.
   - `features.min_nonnull_ratio`: descarta colunas diarias com menos de X% de preenchimento (padrao 50%) antes de gerar features.
-- `modeling.models`: especifica **Logistic Regression** e **XGBoost**.
+- `modeling.models`: especifica **Logistic Regression**, **Random Forest** e **XGBoost**.
 - `modeling.feature_selection`: permite aplicar filtro nas features usando o JSON de importancias do XGB final (`use`, `source`, `keep_top_k`, `keep_list`, `min_importance`).
 
 > Voce pode ajustar quantis/limiares no YAML sem alterar codigo.
@@ -285,7 +285,7 @@ Arquivo: `src/api/handler.py`.
 Copie `xgb.joblib` ou `logreg.joblib` (treinados via `main.py train`) para `./models/` na imagem local ou `/opt/models/` em uma Lambda Layer. O handler tenta carregar desses caminhos em runtime.
 
 ### Passo a passo sugerido
-1. Rode `python main.py train` e copie o artefato (`models/xgb.joblib` ou `models/logreg.joblib`).
+1. Rode `python main.py train` e copie o artefato (`models/xgb.joblib`, `models/rf.joblib` ou `models/logreg.joblib`).
 2. Opcional: crie uma Layer com a pasta `models/` e dependencias (joblib, pandas, numpy).
 3. Faca upload do codigo da funcao (`src/api/handler.py`) e configure o handler como `api.handler`.
 4. Ajuste `PYTHONPATH`/`LAMBDA_TASK_ROOT` conforme a estrutura final e associe a Layer com os modelos.

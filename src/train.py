@@ -12,6 +12,7 @@ import pandas as pd
 import yaml
 from joblib import dump
 from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import balanced_accuracy_score, f1_score
 from sklearn.model_selection import TimeSeriesSplit, GridSearchCV
 from sklearn.pipeline import Pipeline
@@ -1118,7 +1119,7 @@ def _make_estimator(model_cfg: Dict):
             warnings.warn(
                 "[train] xgboost nao instalado; caindo para LogisticRegression."
             )
-            # reaproveita o caminho da logreg (com scaler, que não atrapalha)
+            # reaproveita o caminho da logreg (com scaler, que nao atrapalha)
             return _make_estimator({"type": "logistic_regression", "params": params})
 
         base = XGBClassifier(
@@ -1139,7 +1140,26 @@ def _make_estimator(model_cfg: Dict):
                 (
                     "imputer",
                     SimpleImputer(strategy="median"),
-                ),  # XGB não precisa de scaler
+                ),  # XGB nao precisa de scaler
+                ("model", base),
+            ]
+        )
+        return pipe
+
+    if mtype in ("random_forest", "rf", "randomforest"):
+        base = RandomForestClassifier(
+            n_estimators=params.get("n_estimators", 500),
+            max_depth=params.get("max_depth"),
+            min_samples_split=params.get("min_samples_split", 2),
+            min_samples_leaf=params.get("min_samples_leaf", 1),
+            max_features=params.get("max_features", "auto"),
+            class_weight=params.get("class_weight"),
+            random_state=params.get("random_state", 42),
+            n_jobs=params.get("n_jobs", -1),
+        )
+        pipe = Pipeline(
+            steps=[
+                ("imputer", SimpleImputer(strategy="median")),
                 ("model", base),
             ]
         )
