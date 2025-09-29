@@ -241,11 +241,11 @@ modeling:
   - name: xgb
     type: xgboost
     params:
-      n_estimators: 400
-      learning_rate: 0.05
-      max_depth: 4
-      subsample: 0.9
-      colsample_bytree: 0.8
+      n_estimators: 300
+      learning_rate: 0.01
+      max_depth: 3
+      subsample: 1.0
+      colsample_bytree: 0.6
       num_class: 3                # problema 3-classes (baixo/medio/alto)
       eval_metric: mlogloss       # métrica nativa do XGB (não afeta o scorer do grid)
     tuning:
@@ -289,8 +289,8 @@ modeling:
   feature_selection:
     use: true  
     source: reports/feature_importances_xgb.json
-    keep_top_k: 200  
-    keep_list: [] 
+    keep_top_k: 25  
+    keep_list: [margem_vs_carga_w] 
     min_importance: null 
 
 
