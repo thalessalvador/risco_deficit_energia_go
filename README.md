@@ -15,8 +15,9 @@ project/
    evaluate.py
    etl_ons.py                # ETL: brutos do ONS -> diarios padronizados
    meteo.py                  # Meteorologia (NASA POWER)  fetch/process
-   fetch_ons.py              # Downloader via CKAN (dados.ons.org.br)
-   api/handler.py              # stub p/ AWS Lambda
+  fetch_ons.py              # Downloader via CKAN (dados.ons.org.br)
+  s3_utils.py               # Utilitários para leitura/escrita no S3 (raw/bronze)
+  api/handler.py              # stub p/ AWS Lambda
  configs/config.yaml
  requirements.txt
  README.md
@@ -26,7 +27,82 @@ project/
 
 > Timezone padrao: **America/Sao_Paulo**.
 
+
+## Uso com AWS S3
+> Os arquivos brutos foram baixados e enviados para o S3 utilizando um Jupyter Notebook rodando no Amazon SageMaker.
+
+Para referência e reuso, recomenda-se salvar o notebook de ingestão em:
+
+- Diretório: `data/`
+- Arquivo sugerido: `ingestao_s3_sagemaker.ipynb`
+
+Assim, basta copiar o notebook para `data/ingestao_s3_sagemaker.ipynb` para documentar e reproduzir o processo de ingestão no futuro.
+> **Nota:** Os arquivos presentes em `raw/` no S3 passam pelo mesmo fluxo de ingestão, ETL e processamento do pipeline que os dados baixados diretamente das fontes externas (ONS/NASA). Ou seja, ao optar por buscar do S3, o restante do pipeline permanece idêntico, apenas mudando a origem dos arquivos brutos.
+
+O projeto permite baixar os dados diretamente de um bucket S3, caso você já possua os arquivos padronizados no formato esperado. Para isso:
+
+1. Configure a seção `s3` no arquivo `configs/config.yaml` com as credenciais, bucket, região e prefixo corretos. Exemplo:
+
+```yaml
+s3:
+  enabled: true -- altere aqui se usará ou não o s3
+  bucket: "nome-do-seu-bucket"
+  prefix: "caminho/opcional/"
+  aws_access_key_id: "SUA_AWS_ACCESS_KEY_ID"
+  aws_secret_access_key: "SUA_AWS_SECRET_ACCESS_KEY"
+  region: "us-east-1"
+```
+
+2. Execute o pipeline de dados com a flag `--use-s3`:
+
+```bash
+python main.py data --use-s3
+```
+
+
+**Importante sobre camadas S3:**
+
+- Para leitura de dados brutos, o pipeline sempre busca arquivos do S3 na pasta/prefixo `raw/`.
+- Para gravação de arquivos processados (features, outputs), utilize sempre o prefixo `bronze/` ao salvar no S3.
+
+Exemplo de leitura (download) de dados brutos:
+```python
+from src.s3_utils import download_file_from_s3
+ok = download_file_from_s3(
+  bucket, "ons_carga.csv", "data/raw/ons_carga.csv", prefix="raw/", ...)
+```
+
+Exemplo de gravação (upload) de features processadas:
+```python
+from src.s3_utils import upload_file_to_s3
+upload_file_to_s3(
+  "data/features/features_weekly.parquet", bucket, "features_weekly.parquet", prefix="bronze/", ...)
+```
+
+Os seguintes arquivos serão buscados do S3 (em formato CSV):
+
+- ons_balanco_subsistema_horario.csv
+- ons_intercambios_entre_subsistemas_horario.csv
+- ons_carga.csv
+- ons_ena_diario_subsistema.csv
+- ons_ear_diario_subsistema.csv
+- ons_constrained_off_eolica_mensal.csv
+- ons_constrained_off_fv_mensal.csv
+
+Eles serão baixados para o diretório local especificado em `--raw-dir` (padrão: `data/raw`).
+
+Se a flag não for usada, o comportamento padrão permanece: os dados são baixados automaticamente das fontes do ONS via API/CKAN.
+
+---
+
 ## Inicio Rapido
+
+Antes de iniciar:
+
+1. Faça upload do notebook `data/ingestao_s3_sagemaker.ipynb` para o ambiente do SageMaker e execute-o para realizar a ingestão dos dados no S3.
+2. No bucket S3, crie as pastas (prefixos) `raw/` (para dados brutos) e `bronze/` (para arquivos processados), se ainda não existirem.
+
+Depois:
 
 1) Ambiente e dependencias
 ```bash

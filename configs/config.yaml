@@ -340,4 +340,15 @@ modeling:
     min_fraction: 0.33
     random_state: 42
 
+# ======================================================================
+# Configuração de acesso ao AWS S3 (opcional)
+# ======================================================================
+s3:
+  enabled: true  # true para ativar leitura do S3
+  bucket: "bucketname"
+  prefix: ""
+  aws_access_key_id: "key"
+  aws_secret_access_key: "secret"
+  region: "us-east-1"
+
 

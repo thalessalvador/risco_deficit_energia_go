@@ -40,6 +40,7 @@ def run_data(
     overwrite: bool = False,
     since: Optional[str] = None,
     config_path: Optional[str] = None,
+    use_s3: bool = False,
 ) -> None:
     """Executa download (CKAN), ETL do ONS e, opcionalmente, meteorologia.
 
@@ -49,28 +50,70 @@ def run_data(
       fetch_nasa (bool): Se True, inclui meteorologia (NASA POWER).
       overwrite (bool): Se True, permite sobrescrever saídas.
     """
-    raw = Path(raw_dir)
-    raw.mkdir(parents=True, exist_ok=True)
 
-    # 1) Baixar brutos do ONS
-    print("[data] Baixando dados do ONS (CKAN) para:", raw.resolve())
-    # carrega default do YAML, se disponível
+    cfg = None
     if config_path:
         try:
             cfg = yaml.safe_load(open(config_path, "r", encoding="utf-8"))
-            default_since = (cfg.get("download", {}) or {}).get("since")
-            since = since or default_since
         except Exception:
             cfg = None
+
+    if use_s3:
+        print("[data] Buscando dados do S3...")
+        s3_cfg = (cfg.get("s3") if cfg else {}) or {}
+        if not s3_cfg.get("enabled", False):
+            print("[data] S3 não está habilitado no config.yaml. Usando modo local/API.")
+            use_s3 = False
+
+    if not use_s3:
+        raw = Path(raw_dir)
+        raw.mkdir(parents=True, exist_ok=True)
+    else:
+        import os
+        from src.s3_utils import download_file_from_s3
+        bucket = s3_cfg.get("bucket")
+        # Sempre usar prefixo 'raw/' para leitura dos dados brutos
+        prefix = "raw/"
+        aws_access_key_id = s3_cfg.get("aws_access_key_id")
+        aws_secret_access_key = s3_cfg.get("aws_secret_access_key")
+        region = s3_cfg.get("region")
+        raw = Path(raw_dir)
+        raw.mkdir(parents=True, exist_ok=True)
+        arquivos = [
+            "ons_balanco_subsistema_horario.csv",
+            "ons_intercambios_entre_subsistemas_horario.csv",
+            "ons_carga.csv",
+            "ons_ena_diario_subsistema.csv",
+            "ons_ear_diario_subsistema.csv",
+            "ons_constrained_off_eolica_mensal.csv",
+            "ons_constrained_off_fv_mensal.csv",
+        ]
+        for arq in arquivos:
+            print(f"Baixando arquivo {arq} do S3 (raw)...")
+            s3_key = arq
+            local_path = str(raw / arq)
+            ok = download_file_from_s3(
+                bucket, s3_key, local_path,
+                prefix=prefix,
+                aws_access_key_id=aws_access_key_id,
+                aws_secret_access_key=aws_secret_access_key,
+                region_name=region,
+            )
+            if ok:
+                print(f"[S3] Baixado: {arq} -> {local_path}")
+            else:
+                print(f"[S3] ERRO ao baixar: {arq} -> {local_path}")
+
 
     # parâmetros de região (YAML opcional)
     regions = (cfg.get("regions") if cfg else {}) or {}
     subm_eff = submercado or regions.get("submercado") or "SE/CO"
     carga_area = regions.get("carga_area")
 
-    res = fetch_all(raw, since=since, overwrite=overwrite)
-    for k, p in res.items():
-        print(f"   - {k}: {p if p else 'não baixado'}")
+    if not use_s3:
+        res = fetch_all(raw, since=since, overwrite=overwrite)
+        for k, p in res.items():
+            print(f"   - {k}: {p if p else 'não baixado'}")
 
     # (Re)baixa carga com a área configurada, se fornecida
     if carga_area:
@@ -128,6 +171,20 @@ def run_features(config_path: str) -> None:
     Xw.to_parquet(out)
     print("[features] salvo:", out, Xw.shape)
 
+    # Exemplo: para salvar no S3 (camada bronze), use upload_file_to_s3 com prefix='bronze/'
+    # from src.s3_utils import upload_file_to_s3
+    # s3_cfg = yaml.safe_load(open(config_path, "r", encoding="utf-8")).get("s3", {})
+    # upload_file_to_s3(
+    #     str(out),
+    #     s3_cfg.get("bucket"),
+    #     out.name,
+    #     prefix="bronze/",
+    #     aws_access_key_id=s3_cfg.get("aws_access_key_id"),
+    #     aws_secret_access_key=s3_cfg.get("aws_secret_access_key"),
+    #     region_name=s3_cfg.get("region"),
+    # )
+    # print(f"[S3] Features salvas em bronze: {out.name}")
+
 
 def run_train(config_path: str) -> None:
     """Treina modelos definidos no YAML e salva artefatos."""
@@ -148,6 +205,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     """Parseia argumentos da CLI unificada do projeto."""
     p = argparse.ArgumentParser(
         description="CLI unificada do projeto (dados -> features -> treino -> avaliação)"
+    )
+    p.add_argument(
+        "--use-s3",
+        action="store_true",
+        help="Se definido, busca os dados do S3 conforme configuração do YAML. Por padrão, usa API/local."
     )
     # Suporta tanto positional action quanto --action
     p.add_argument(
@@ -218,6 +280,7 @@ def main(argv: list[str] | None = None) -> None:
             overwrite=args.overwrite,
             since=args.since,
             config_path=args.config,
+            use_s3=args.use_s3,
         )
     elif args.action == "features":
         run_features(args.config)
@@ -233,6 +296,7 @@ def main(argv: list[str] | None = None) -> None:
             overwrite=args.overwrite,
             since=args.since,
             config_path=args.config,
+            use_s3=args.use_s3,
         )
         run_features(args.config)
         run_train(args.config)
