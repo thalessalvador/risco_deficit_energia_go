@@ -54,12 +54,14 @@ data/raw/**/*.feather
 data/raw/**/*.xlsx
 data/raw/**/*.xls
 data/raw/**/*.csv
+data/raw/_tmp_fetch/**
 
 # Permitir arquivos de marcador (para versionar pastas vazias) e exemplos
 !data/**/.gitkeep
 !data/raw/**/amostra_*.csv
 !data/raw/**/sample_*.csv
 !data/raw/**/README*.md
+
 
 # Arquivos temporários/arquivos de pacote
 *.tmp
