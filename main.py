@@ -185,6 +185,8 @@ def run_features(config_path: str) -> None:
             region_name=s3_cfg.get("region"),
         )
         print(f"[S3] Features salvas em bronze: {out.name}")
+    else:
+        print("[S3] Upload para bronze não realizado: S3 desabilitado no config.yaml.")
 
 
 def run_train(config_path: str) -> None:

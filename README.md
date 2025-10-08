@@ -64,6 +64,7 @@ python main.py data --use-s3
 
 - Para leitura de dados brutos, o pipeline sempre busca arquivos do S3 na pasta/prefixo `raw/`.
 - Para gravação de arquivos processados (features, outputs), utilize sempre o prefixo `bronze/` ao salvar no S3.
+- O upload automático das features para o S3 só ocorre se o S3 estiver habilitado (`enabled: true` no bloco `s3` do `config.yaml`). Caso contrário, o arquivo será salvo apenas localmente.
 
 Exemplo de leitura (download) de dados brutos:
 ```python
