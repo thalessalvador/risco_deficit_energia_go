@@ -345,10 +345,9 @@ modeling:
 # ======================================================================
 s3:
   enabled: true  # true para ativar leitura do S3
-  bucket: "bucketname"
+  bucket: "labriscoenergeticomod2"
   prefix: ""
-  aws_access_key_id: "key"
-  aws_secret_access_key: "secret"
+  aws_access_key_id: ""
+  aws_secret_access_key: ""
   region: "us-east-1"
-
 

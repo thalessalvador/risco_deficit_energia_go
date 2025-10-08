@@ -171,19 +171,20 @@ def run_features(config_path: str) -> None:
     Xw.to_parquet(out)
     print("[features] salvo:", out, Xw.shape)
 
-    # Exemplo: para salvar no S3 (camada bronze), use upload_file_to_s3 com prefix='bronze/'
-    # from src.s3_utils import upload_file_to_s3
-    # s3_cfg = yaml.safe_load(open(config_path, "r", encoding="utf-8")).get("s3", {})
-    # upload_file_to_s3(
-    #     str(out),
-    #     s3_cfg.get("bucket"),
-    #     out.name,
-    #     prefix="bronze/",
-    #     aws_access_key_id=s3_cfg.get("aws_access_key_id"),
-    #     aws_secret_access_key=s3_cfg.get("aws_secret_access_key"),
-    #     region_name=s3_cfg.get("region"),
-    # )
-    # print(f"[S3] Features salvas em bronze: {out.name}")
+    # Salva também no S3 (camada bronze), se configurado
+    s3_cfg = cfg.get("s3", {})
+    if s3_cfg.get("enabled", False):
+        from src.s3_utils import upload_file_to_s3
+        upload_file_to_s3(
+            str(out),
+            s3_cfg.get("bucket"),
+            out.name,
+            prefix="bronze/",
+            aws_access_key_id=s3_cfg.get("aws_access_key_id"),
+            aws_secret_access_key=s3_cfg.get("aws_secret_access_key"),
+            region_name=s3_cfg.get("region"),
+        )
+        print(f"[S3] Features salvas em bronze: {out.name}")
 
 
 def run_train(config_path: str) -> None:
