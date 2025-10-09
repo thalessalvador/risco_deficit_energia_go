@@ -1,5 +1,49 @@
 # Risco Semanal de Deficit de Energia em Goias (SE/CO)
 
+## Modelagem e Transformações com dbt
+
+O projeto utiliza dbt para modelagem e transformação dos dados no Snowflake.
+
+### Como rodar os modelos dbt
+
+1. Instale as dependências (já incluso em requirements.txt):
+  ```bash
+  pip install -r requirements.txt
+  ```
+
+2. Configure o arquivo `profiles.yml` em `C:/Users/<seu_usuario>/.dbt/profiles.yml` com as credenciais do Snowflake (veja exemplo em `dbt_energia/` ou peça ao time).
+
+3. Navegue até a pasta do projeto dbt:
+  ```bash
+  cd dbt_energia
+  ```
+
+4. Execute os modelos:
+  ```bash
+  dbt run
+  ```
+  Isso irá criar/atualizar as tabelas no Snowflake, incluindo `dim_calendario` e `fato_metricas_energia`.
+
+5. Para rodar apenas um modelo específico:
+  ```bash
+  dbt run --select fato_metricas_energia
+  ```
+
+6. Para validar e documentar:
+  ```bash
+  dbt test
+  dbt docs generate
+  dbt docs serve
+  ```
+  O comando `dbt docs serve` abrirá uma interface web com a documentação e lineage dos modelos.
+
+### Observações
+- Os modelos dbt estão em `dbt_energia/models/`.
+- Ajuste os aliases ou inclua mais colunas conforme necessário nos arquivos `.sql`.
+- O filtro `where DATA is not null` nos modelos garante que apenas registros válidos sejam considerados.
+- Para agendar execuções automáticas, utilize dbt Cloud, Airflow ou outro orquestrador.
+
+
 **Objetivo:** classificar, em **horizonte semanal**, o **risco de deficit de energia** em Goias (baixo | medio | alto) usando dados **operacionais do ONS** e **clima** (leve).  
 **Disciplinas atendidas:** Machine Learning, Cloud (AWS) e Modelagem de Dados.
 **Alunos:** Thales Salvador, Miguel Toledo, Carlos Henrique.
