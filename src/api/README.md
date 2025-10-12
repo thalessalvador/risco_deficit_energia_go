@@ -1,4 +1,4 @@
-# 🚀 API de Predição de Risco de Déficit de Energia — AWS Lambda + Docker
+# API de Predição de Risco de Déficit de Energia — AWS Lambda + Docker
 
 Este projeto demonstra o deploy do modelo no **AWS Lambda** utilizando uma **imagem Docker** hospedada no **Amazon ECR (Elastic Container Registry) - Serverless**.  
 A aplicação expõe uma **API HTTP** via **Lambda Function URL**, que recebe um JSON com as features e retorna a classe de risco (`alto`, `médio`, `baixo`).
