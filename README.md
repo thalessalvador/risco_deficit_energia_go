@@ -62,7 +62,7 @@ Detalhes sobre fontes, nomes de arquivos e parametrizacao em `README_data.md`.
 
 ## Dados utilizados
 
-Coloque estes **CSVs diarios** em `data/raw/` (colunas efetivamente usadas no pipeline):
+O Software coloca estes **CSVs diarios** em `data/raw/` ou você mesmo pode colocar (colunas efetivamente usadas no pipeline):
 
 | Arquivo CSV | Colunas usadas | Fonte |
 |---|---|---|
@@ -75,7 +75,7 @@ Coloque estes **CSVs diarios** em `data/raw/` (colunas efetivamente usadas no pi
 | `ons_cortes_fv_diario.csv` | `data`, `corte_fv_mwh` | ONS  cortes FV (constrained-off) |
 | `clima_go_diario.csv` | `data`, `ghi`, `temp2m_c`, `precipitacao_mm` | NASA POWER (GO agregado) |
 
-Observacao: para clima criamos derivadas diarias antes do D->W: `precip_14d_mm` e `precip_30d_mm`.
+Observacao: para clima criamos derivadas diarias antes do D->W: `precip_14d_mm`, `precip_30d_mm`, `precip_90d_mm` e `precip_180d_mm`.
 
 > Se algum dataset vier horario/semi-horario, **agregue para diario** (media ou soma, conforme a metrica) antes de salvar, ou deixe que os scripts reamostrem.
 
@@ -209,7 +209,7 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-## Como rodar
+## Como rodar (após concluída a etapa "data")
 
 1) **Gerar features semanais**
 ```bash
@@ -284,34 +284,12 @@ Use `keep_list` para colunas obrigatorias, `keep_top_k` para limitar pelo rankin
 ## API (stub para AWS Lambda)
 
 Arquivo: `src/api/handler.py`.  
-Copie `xgb.joblib` ou `logreg.joblib` (treinados via `main.py train`) para `./models/` na imagem local ou `/opt/models/` em uma Lambda Layer. O handler tenta carregar desses caminhos em runtime.
+Utilize `xgb.joblib`, `rf.joblib`  ou `logreg.joblib` (treinados via `main.py train`) para gerar uma API Lambda.
 
 ### Passo a passo sugerido
-1. Rode `python main.py train` e copie o artefato (`models/xgb.joblib`, `models/rf.joblib` ou `models/logreg.joblib`).
-2. Opcional: crie uma Layer com a pasta `models/` e dependencias (joblib, pandas, numpy).
-3. Faca upload do codigo da funcao (`src/api/handler.py`) e configure o handler como `api.handler`.
-4. Ajuste `PYTHONPATH`/`LAMBDA_TASK_ROOT` conforme a estrutura final e associe a Layer com os modelos.
-5. Crie um endpoint (API Gateway HTTP/REST) e mapeie o metodo POST para a funcao.
+Um passo a passo completo em formato de README.md foi criado na pasta src/api deste projeto.
 
-O handler alinha o JSON recebido as colunas esperadas (`selected_features_`) e retorna sempre o rotulo textual (`inv_label_mapping_`). Quando a selecao de features estiver ativa, colunas ausentes sao preenchidas com `NA`.
-
-### Payload de exemplo
-```json
-{
-  "features": {
-    "ghi_mean_w": 5.1,
-    "temp2m_c_max_w": 33.4,
-    "precip_14d_mm_sum_w": 12.0,
-    "margem_suprimento_w": 1.23
-  }
-}
-```
-
-Resposta
-```json
-{ "classe_risco": "baixo" }
-```
-
+>Importante:
 > Para producao, proteja o endpoint (API Gateway) e versione o modelo.
 > Apenas as features usadas no treino precisam estar presentes.
 

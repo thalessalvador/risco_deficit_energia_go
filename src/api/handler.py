@@ -4,13 +4,16 @@ from pathlib import Path
 from typing import Any, Dict
 
 import pandas as pd
+import numpy as np
 from joblib import load
 
 MODEL_CANDIDATES = [
-    Path("/opt/models/xgb.joblib"),
-    Path("/opt/models/logreg.joblib"),
+    Path("/opt/python/models/xgb.joblib"),
+    Path("/opt/python/models/logreg.joblib"),
+    Path("/opt/python/models/rf.joblib"),
     Path("models/xgb.joblib"),
     Path("models/logreg.joblib"),
+    Path("models/rf.joblib"),
 ]
 _model = None
 
@@ -31,11 +34,13 @@ def _load_model() -> Any:
 
 
 def _prepare_features(model: Any, feats: Dict[str, Any]) -> pd.DataFrame:
-    """Monta DataFrame alinhado com as colunas usadas no treinamento."""
     X = pd.DataFrame([feats])
     expected = getattr(model, "selected_features_", None)
     if expected:
-        X = X.reindex(columns=list(expected), fill_value=pd.NA)
+        # usar np.nan em vez de pandas.NA
+        X = X.reindex(columns=list(expected), fill_value=np.nan)
+    # garantir numérico (strings -> float, inválidos -> NaN)
+    X = X.apply(pd.to_numeric, errors="coerce")
     return X
 
 
@@ -59,7 +64,9 @@ def handler(event, context):
     if not isinstance(body, dict):
         return {
             "statusCode": 400,
-            "body": json.dumps({"error": "Payload invalido; envie JSON no campo 'body'."}),
+            "body": json.dumps(
+                {"error": "Payload invalido; envie JSON no campo 'body'."}
+            ),
         }
 
     feats = body.get("features", {})
