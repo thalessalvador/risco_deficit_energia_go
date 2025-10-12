@@ -340,4 +340,14 @@ modeling:
     min_fraction: 0.33
     random_state: 42
 
+# ======================================================================
+# Configuração de acesso ao AWS S3 (opcional)
+# ======================================================================
+s3:
+  enabled: true  # true para ativar leitura do S3
+  bucket: "labriscoenergeticomod2"
+  prefix: ""
+  aws_access_key_id: ""
+  aws_secret_access_key: ""
+  region: "us-east-1"
 

@@ -66,22 +66,24 @@ def load_all_sources(cfg: Dict) -> Dict[str, pd.DataFrame]:
     raw = Path(cfg["paths"]["raw_dir"])
 
     files = {
-        "carga": raw / "ons_carga_diaria.csv",
-        "ger_fontes": raw / "ons_geracao_fontes_diaria.csv",
-        "intercambio": raw / "ons_intercambio_diario.csv",
-        "ena": raw / "ons_ena_diaria.csv",
-        "ear": raw / "ons_ear_diaria.csv",
-        "cortes_eolica": raw / "ons_cortes_eolica_diario.csv",
-        "cortes_fv": raw / "ons_cortes_fv_diario.csv",
-        "clima": raw / "clima_go_diario.csv",
+        "carga": [raw / "ons_carga_diaria.csv", raw / "ons_carga.csv"],
+        "ger_fontes": [raw / "ons_geracao_fontes_diaria.csv"],
+        "intercambio": [raw / "ons_intercambio_diario.csv"],
+        "ena": [raw / "ons_ena_diaria.csv"],
+        "ear": [raw / "ons_ear_diaria.csv"],
+        "cortes_eolica": [raw / "ons_cortes_eolica_diario.csv"],
+        "cortes_fv": [raw / "ons_cortes_fv_diario.csv"],
+        "clima": [raw / "clima_go_diario.csv"],
     }
 
     data = {}
-    for name, path in files.items():
-        if path.exists():
-            df = read_csv_timeseries(path, dt_col="data")
-            df = ensure_daily(df)
-            data[name] = df
+    for name, paths in files.items():
+        for path in paths:
+            if path.exists():
+                df = read_csv_timeseries(path, dt_col="data")
+                df = ensure_daily(df)
+                data[name] = df
+                break
     if not data:
         raise FileNotFoundError(f"Nenhum CSV encontrado em {raw}.")
     return data
