@@ -368,13 +368,13 @@ python main.py eval --model xgb   # ou --model logreg / --model rf
 
 ## Como rotulamos (resumo)
 
-1. Calculamos a **margem de suprimento semanal**:  
-   `geracao_total (hidro+eolica+FV+term) + importacoes  exportacoes`.  
-2. Aplicamos **quantis** sobre o **minimo**/proxy semanal para definir:  
-   - **alto** ( Q10), **medio** (Q10Q40], **baixo** (> Q40).  
-3. **Ajustes**:  
-   - **Cortes** (constrained-off) eolico/FV: **reduzem** o risco quando representam superavit renovavel (razao de corte > limiar e sem importacao liquida).  
-   - **Hidrologia**: **EAR** muito baixa **ou** **ENA** muito baixa por `k` semanas -> **alto**.
+1. Usamos a coluna `margem_vs_carga_w` (diferença entre oferta e carga semanal) como proxy principal de risco; valores negativos indicam déficit.  
+2. Aplicamos os quantis configurados (`q_baixo: 0.05`, `q_medio: 0.20`):  
+   - **alto** (<= P5), **medio** (P5-P20], **baixo** (> P20).  
+3. **Ajustes** complementares garantem aderência normativa e sinais hidrológicos:  
+   - **Cortes** (constrained-off) eólico/FV: podem **rebaixar** o risco quando há superávit renovável (`ratio_corte_renovavel_w >= 0.05` e saldo importador <= 0).  
+   - **Hidrologia crítica**: **EAR** <= P20 ou **ENA** <= P20 por `k` semanas consecutivas endurecem para **alto**.  
+   - **Regras duras (EPE/MME/ONS)**: violações de `lolp_52w >= 0.05`, `ens_week_ratio >= 0.05` ou `reserve_margin_ratio_w < 0.05` forçam o rótulo **alto**, independentemente dos quantis.
 
 ## Auditoria de Rotulagem
 
